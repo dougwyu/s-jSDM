@@ -317,7 +317,7 @@ get_conditional_lls = function(m, null_m, ...) {
   
   args = list(...)
   if(!is.null(args[["sampling"]])) samples = args[["sampling"]]
-  else samples = m$samples
+  else samples = m$settings$sampling
   
   # MC samples
   MC_samples = pkg.env$torch$torch$randn(size = c(as.integer(samples),
