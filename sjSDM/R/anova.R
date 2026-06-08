@@ -41,6 +41,7 @@ anova.sjSDM = function(object, samples = 5000L, verbose = TRUE, ...) {
   samples = as.integer(samples)
   object = checkModel(object)
   object$samples = samples
+  object$settings$sampling = samples
   
   pkg.env$fa$set_seed(object$seed)
 #   if(object$family$family$family == "gaussian") stop("gaussian not yet supported")
@@ -311,14 +312,41 @@ correct_R2 = function(R2) {
 }
 
 get_conditional_lls = function(m, null_m, ...) {
-  joint_ll = rowSums( logLik(m, individual = TRUE, ...)[[1]] )
-    
+  
+  predictions = predict(m, type = "raw")  
+  
+  args = list(...)
+  if(!is.null(args[["sampling"]])) samples = args[["sampling"]]
+  else samples = m$samples
+  
+  # MC samples
+  MC_samples = pkg.env$torch$torch$randn(size = c(as.integer(samples),
+                                                  nrow(predictions), 
+                                                  ncol(m$model$get_sigma)), 
+                                         dtype=pkg.env$torch$torch$float32)
+  joint_ll = 
+    reticulate::py_to_r(
+      pkg.env$fa$MVP_logLik(m$data$Y, 
+                            predictions, 
+                            reticulate::py_to_r(m$model$get_sigma),
+                            device = m$model$device,
+                            individual = TRUE,
+                            dtype = m$model$dtype,
+                            batch_size = as.integer(m$settings$step_size),
+                            alpha = m$model$alpha,
+                            link = m$family$link,
+                            theta = m$theta,
+                            noise = MC_samples,
+                            ...
+      )
+    ) |> rowSums() 
+  
    raw_ll = 
     sapply(1:ncol(m$data$Y), function(i) {
       
       reticulate::py_to_r(
         pkg.env$fa$MVP_logLik(m$data$Y[,-i], 
-                              predict(m, type = "raw")[,-i], 
+                              predictions[,-i], 
                               reticulate::py_to_r(m$model$get_sigma)[-i,],
                               device = m$model$device,
                               individual = TRUE,
@@ -327,6 +355,7 @@ get_conditional_lls = function(m, null_m, ...) {
                               alpha = m$model$alpha,
                               link = m$family$link,
                               theta = m$theta[-i],
+                              noise = MC_samples,
                               ...
                               )
         ) 
@@ -336,8 +365,15 @@ get_conditional_lls = function(m, null_m, ...) {
   rates = diff_ll/sum(diff_ll)
   rescaled_conditional_lls = null_m - matrix(rates, nrow = nrow(m$data$Y), ncol = ncol(m$data$Y), byrow = TRUE) * (rowSums(null_m)-joint_ll)
   
+  pred_prob = exp(-rescaled_conditional_lls)
+  pred_prob[pred_prob > 1] = 1.0
+  pred_prob[pred_prob < 0] = 0.0
+  rescaled_conditional_lls = -log(pred_prob)
+  
   ### Maximal/Minimal 0?
   #rescaled_conditional_lls[rescaled_conditional_lls<0] = 0 does not work!
+  
+  
   
   return(rescaled_conditional_lls)
 }
