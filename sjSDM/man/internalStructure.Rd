@@ -7,7 +7,7 @@
 internalStructure(
   object,
   Rsquared = c("McFadden", "Nagelkerke"),
-  fractions = c("mvp", "mvp_proportional", "discard", "proportional", "equal"),
+  fractions = c("mvp_proportional", "mvp", "discard", "proportional", "equal"),
   negatives = c("floor", "scale", "raw"),
   plot = FALSE
 )
