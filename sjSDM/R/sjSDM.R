@@ -739,6 +739,7 @@ update.sjSDM = function(object, env_formula = NULL, spatial_formula = NULL, biot
                     device = object$settings$device, 
                     dtype = object$settings$dtype,
                     se = object$settings$se,
+                    seed = object$seed,
                     ...
   )
   return(new_model)

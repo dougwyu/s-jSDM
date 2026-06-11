@@ -113,7 +113,7 @@ class MultivariateProbit(TorchDistribution):
         return loss.view(shape[:-1])
 
 
-def MVP_logLik(Y, X, sigma, device, dtype, batch_size=25, alpha = 1.0, sampling=1000, link="probit", individual=False, theta = None):
+def MVP_logLik(Y, X, sigma, device, dtype, batch_size=25, alpha = 1.0, sampling=1000, link="probit", individual=False, theta = None, noise = None):
 
     torch.set_default_tensor_type('torch.FloatTensor')
     
@@ -146,16 +146,21 @@ def MVP_logLik(Y, X, sigma, device, dtype, batch_size=25, alpha = 1.0, sampling=
     if theta is not None:
         theta = torch.tensor(theta, dtype=dtype, device=torch.device(device))
 
-    data = torch.utils.data.TensorDataset(torch.tensor(Y, dtype=dtype, device=torch.device('cpu')), torch.tensor(X, dtype=dtype, device=torch.device('cpu')))
+    data = torch.utils.data.TensorDataset(torch.tensor(Y, dtype=dtype, device=torch.device('cpu')), 
+                                          torch.tensor(X, dtype=dtype, device=torch.device('cpu')),
+                                          torch.arange(X.shape[0], dtype=torch.long, device=torch.device('cpu')))
     DataLoader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin_memory, drop_last=False)
     torch.cuda.empty_cache()
     sigma=torch.tensor(sigma, dtype=dtype, device=torch.device(device))
     logLik = []
-    for step, (y, pred) in enumerate(DataLoader):
+    for step, (y, pred, indices) in enumerate(DataLoader):
         y = y.to(device, non_blocking=True)
         pred = pred.to(device, non_blocking=True)
-        noise = torch.randn(size = [sampling, pred.shape[0], sigma.shape[1]], device=torch.device(device), dtype=dtype)
-        E = link_func( torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(pred).mul(alpha) ).mul(0.999999).add(0.0000005)
+        if noise is None:
+            noise_tmp = torch.randn(size = [sampling, pred.shape[0], sigma.shape[1]], device=torch.device(device), dtype=dtype)
+        else:
+            noise_tmp = noise[:,indices,:].to(device, non_blocking=True)
+        E = link_func( torch.einsum("ijk, lk -> ijl", [noise_tmp, sigma]).add(pred).mul(alpha) ).mul(0.999999).add(0.0000005)
         if link in ["probit", "linear", "logit"] : 
             logprob = E.log().mul(y).add((1.0 - E).log().mul(1.0 - y)).neg().sum(dim = 2).neg()
         elif link == "count":
