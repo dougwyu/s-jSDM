@@ -158,7 +158,7 @@ sjSDM = function(Y = NULL,
                  sampling = 100L,
                  parallel = 0L, 
                  control = sjSDMControl(),
-                 device = "cpu", 
+                 device = getOption("sjSDM.device", "cpu"),
                  dtype = "float32",
                  seed = 758341678,
                  verbose = TRUE) {
