@@ -5,6 +5,19 @@ Format loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 1 Mojo forward kernel** (`work/port-feasibility/mojo/`): binary
+  logit Monte Carlo likelihood forward pass, parallelized across sites on
+  the CPU thread pool via `max.algorithm.parallelize`. Externally supplied
+  noise (no RNG in the kernel) enables exact parity testing.
+  - Parity vs PyTorch reference: max abs error ≤ 8e-6 at float32.
+  - Speed on large workload (20k sites × 200 species × 400 MC samples):
+    ~6.5s vs ~29s PyTorch CPU and ~124s PyTorch MPS; also avoids
+    materializing the sampling×sites×species intermediate tensor.
+  - `parity_check.py` generates inputs, runs both implementations, and
+    compares per-site losses.
+
 ### Fixed
 
 - **MPS device support**: replaced `device.type + ":" + str(device.index)`
