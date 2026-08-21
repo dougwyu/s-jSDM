@@ -126,7 +126,7 @@ def MVP_logLik(Y, X, sigma, device, dtype, batch_size=25, alpha = 1.0, sampling=
     if device.type == 'cuda':
         torch.cuda.set_device(device)
         pin_memory = False
-        device = device.type+ ":" + str(device.index)
+        device = str(device)
     else:
         pin_memory = True
 

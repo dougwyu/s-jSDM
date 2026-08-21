@@ -382,7 +382,7 @@ class Model_sjSDM:
             self.optimizer = optimizer(params = itertools.chain(*self.params))
 
         if scheduler:
-            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode="min", patience=patience, factor=factor, verbose=True)
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode="min", patience=patience, factor=factor)
             self.useSched = True
         else:
             self.useSched = False
@@ -419,7 +419,7 @@ class Model_sjSDM:
         alpha = self.alpha
         
         if self.device.type == 'cuda' or self.device.type == 'mps': # type: ignore
-            device = self.device.type+ ":" + str(self.device.index) # type: ignore
+            device = str(self.device) # type: ignore
         else:
             device = 'cpu'
 
@@ -552,7 +552,7 @@ class Model_sjSDM:
         any_losses = len(self.losses) > 0
 
         if self.device.type == 'cuda' or self.device.type == "mps": # type: ignore
-            device = self.device.type+ ":" + str(self.device.index) # type: ignore
+            device = str(self.device) # type: ignore
         else:
             device = 'cpu'
 
@@ -621,7 +621,7 @@ class Model_sjSDM:
 
         pred = []
         if self.device.type == 'cuda' or self.device.type == "mps": # type: ignore
-            device = self.device.type+ ":" + str(self.device.index) # type: ignore
+            device = str(self.device) # type: ignore
         else:
             device = 'cpu'
 
@@ -727,7 +727,7 @@ class Model_sjSDM:
         y_dim = Y.shape[1]
 
         if self.device.type == 'cuda' or self.device.type == "mps":
-            device = self.device.type+ ":" + str(self.device.index)
+            device = str(self.device)
         else:
             device = 'cpu'
         
