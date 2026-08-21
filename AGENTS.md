@@ -109,6 +109,13 @@ Important dimensions for benchmarks are Monte Carlo samples, batch size, species
 
 Avoid committing local caches, generated plots, R workspace files, Python `__pycache__` directories, or temporary benchmark output unless explicitly required. Generated walkthrough plots belong under `Code/plots/` when they are intentionally retained.
 
+## GitHub CLI
+
+The `gh` token lacks the `workflow` scope, so `gh release create` refuses with
+a scope error even for plain releases; work around it with the REST API
+(`gh api -X POST repos/<owner>/<repo>/releases --input body.json`), or run
+`gh auth refresh -h github.com -s workflow` once to fix permanently.
+
 ## Licensing
 
 The project is GPL-3 licensed. Any derivative backend or distributed port must preserve compatible licensing and notices.
