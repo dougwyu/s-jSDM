@@ -51,7 +51,7 @@ sjSDM_cv = function(Y,
                     lambda_cov = 2^seq(-10,-1, length.out = 20),
                     lambda_coef = 2^seq(-10,-0.5, length.out = 20),
                     lambda_spatial = 2^seq(-10,-0.5, length.out = 20),
-                    device="cpu",
+                    device=getOption("sjSDM.device", "cpu"),
                     n_cores = NULL, 
                     n_gpu = NULL,
                     sampling = 5000L,
@@ -223,7 +223,21 @@ sjSDM_cv = function(Y,
     cl = parallel::makeCluster(n_cores)
     nodes = unlist(parallel::clusterEvalQ(cl, paste(Sys.info()[['nodename']], Sys.getpid(), sep='-')))
     #print(nodes)
-    control = parallel::clusterEvalQ(cl, {library(sjSDM)})
+    # Workers default to the installed package; set sjSDM.dev to a source
+    # checkout so they load local changes via devtools instead.
+    dev_path = getOption("sjSDM.dev")
+    if(is.null(dev_path)) {
+      control = parallel::clusterEvalQ(cl, {
+        dev_path <- NULL
+        library(sjSDM)
+      })
+    } else {
+      parallel::clusterExport(cl, "dev_path", envir = environment())
+      control = parallel::clusterEvalQ(cl, {
+        library(devtools)
+        devtools::load_all(dev_path, quiet = TRUE)
+      })
+    }
     if(length(ellip) > 0 ) parallel::clusterExport(cl, list("tune_samples", "test_indices","biotic", "CV", "env","spatial", "Y", "nodes","n_gpu","n_cores","device","sampling","..."), envir = environment())
     else parallel::clusterExport(cl, list("tune_samples", "test_indices","biotic", "CV", "env","spatial", "Y", "nodes","n_gpu","n_cores","device","sampling"), envir = environment())
     
