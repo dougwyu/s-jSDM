@@ -118,49 +118,6 @@ dev.off()
 
 cat("plots written to Code/plots/\n")
 
-## ---- 10. Do different synthetic communities partition differently? ---------
-# Fit the same environmental model to two communities that differ only in
-# the strength of true species associations, then compare partitions.
-fit_community <- function(Y_comm, seed = 1) {
-  set.seed(seed)
-  m <- sjSDM(
-    Y = Y_comm,
-    env = linear(data = X),
-    biotic = bioticStruct(df = 5),
-    iter = 100, sampling = 100, verbose = FALSE
-  )
-  av <- summary(anova(m))
-  dev_expl <- av[, "R2 Nagelkerke"]
-  list(model = m, anova = av, partition = dev_expl)
-}
-
-simulate_community <- function(assoc_strength) {
-  Sig <- matrix(assoc_strength, n_species, n_species)
-  diag(Sig) <- 1
-  logit_p_c <- cbind(1, X) %*% rbind(rnorm(n_species), beta)
-  Zc <- mvtnorm::rmvnorm(n_sites, sigma = Sig)
-  matrix(rbinom(n_sites * n_species, 1, plogis(logit_p_c + Zc)),
-         n_sites, n_species)
-}
-
-set.seed(7)
-Y_weak   <- simulate_community(0.1)   # nearly independent species
-Y_strong <- simulate_community(0.6)   # strongly associated species
-
-res_weak   <- fit_community(Y_weak)
-res_strong <- fit_community(Y_strong)
-
-partition_cmp <- rbind(
-  weak_associations   = res_weak$partition,
-  strong_associations = res_strong$partition
-)
-cat("\n--- Variation partitioning: weak vs strong associations ---\n")
-print(round(partition_cmp, 3))
-
-cat("\nEstimated mean off-diagonal covariance (weak / strong):\n")
-mean_offdiag <- function(m) {
-  C <- getCov(m); n <- ncol(C)
-  mean(C[upper.tri(C)])
-}
-round(c(mean_offdiag(res_weak$model),
-        mean_offdiag(res_strong$model)), 3)
+# NOTE: the weak-vs-strong association recovery experiment that used to live
+# here has moved to Code/sjSDM_mojo_tutorial.Rmd ("Do fits recover known
+# association strength?").

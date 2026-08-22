@@ -82,25 +82,25 @@ worker binary. No Python knowledge is needed at any step.
 
 **Step 1 -- clone the repository:**
 
-```{bash clone}
-# git clone https://github.com/dougwyu/s-jSDM.git
-# cd s-jSDM
+```{bash clone, eval=FALSE}
+git clone https://github.com/dougwyu/s-jSDM.git
+cd s-jSDM
 ```
 
 **Step 2 -- install pixi** (one-time; see https://pixi.sh for alternatives):
 
-```{bash pixi}
+```{bash pixi, eval=FALSE}
 # macOS/Linux:
-# curl -fsSL https://pixi.sh/install.sh | sh
+curl -fsSL https://pixi.sh/install.sh | sh
 ```
 
 **Step 3 -- create the pinned Python environment and build the Mojo worker.**
 From the repository root:
 
-```{bash build}
-# cd work/mojo-backend
-# pixi install
-# pixi run mojo build -O 3 mojo/mc_logit_grad_server.mojo -o mc_grad_server_bin
+```{bash build, eval=FALSE}
+cd work/mojo-backend
+pixi install
+pixi run mojo build -O 3 mojo/mc_logit_grad_server.mojo -o mc_grad_server_bin
 ```
 
 The `-O 3` flag matters: unoptimized Mojo builds are roughly 50x slower.
@@ -266,6 +266,165 @@ mean(cov_mat[upper.tri(cov_mat)])
 
 Species weights (the actual fitted parameter matrices) are available via
 `getWeights(fit)` / `setWeights()` if you need raw access.
+
+## Do fits recover known association strength?
+
+A useful sanity check: simulate two communities that differ **only** in the
+strength of their true species associations (weak vs. strong off-diagonal
+covariance), fit the same environmental model to each, and verify that
+sjSDM's estimated associations track the truth.
+
+```{r assoc-recovery}
+simulate_community <- function(assoc_strength) {
+  Sig <- matrix(assoc_strength, n_species, n_species)
+  diag(Sig) <- 1
+  logit_p_c <- cbind(1, X) %*% rbind(rnorm(n_species), beta)
+  Zc <- mvtnorm::rmvnorm(n_sites, sigma = Sig)
+  matrix(rbinom(n_sites * n_species, 1, plogis(logit_p_c + Zc)),
+         n_sites, n_species)
+}
+
+fit_community <- function(Y_comm, seed = 1) {
+  set.seed(seed)
+  m <- sjSDM(
+    Y = Y_comm,
+    env = linear(data = X),
+    biotic = bioticStruct(df = 5),
+    iter = 100, sampling = 100, verbose = FALSE
+  )
+  list(model = m, partition = summary(anova(m))[, "R2 Nagelkerke"])
+}
+
+set.seed(7)
+Y_weak   <- simulate_community(0.1)   # nearly independent species
+Y_strong <- simulate_community(0.6)   # strongly associated species
+
+res_weak   <- fit_community(Y_weak)
+res_strong <- fit_community(Y_strong)
+
+# Variation partitioning should assign more deviance to associations
+# when the true associations are strong:
+rbind(
+  weak_associations   = res_weak$partition,
+  strong_associations = res_strong$partition
+)
+
+# ... and the mean estimated off-diagonal covariance should be larger:
+mean_offdiag <- function(m) {
+  C <- getCov(m)
+  mean(C[upper.tri(C)])
+}
+round(c(weak   = mean_offdiag(res_weak$model),
+        strong = mean_offdiag(res_strong$model)), 3)
+```
+
+You should see the strong-association community show a substantially larger
+association component in the partition and a larger mean fitted covariance.
+This is a good template for testing whether a dataset actually supports
+inference about biotic structure before interpreting it.
+
+## Do fits detect dispersal limitation?
+
+Dispersal limitation leaves a characteristic fingerprint: species occur
+(or fail to) in **spatially coherent patches** that no measured environmental
+variable explains. We simulate this by drawing each community's latent
+site effects from a *spatially autocorrelated* Gaussian field over the
+coordinates -- weak or strong -- while keeping environmental responses and
+associations identical. A spatial sjSDM should assign more deviance to the
+spatial component when dispersal limitation is strong.
+
+```{r dispersal}
+# Exponentially decaying spatial covariance over coordinates:
+spatial_field <- function(coords, range = 0.5) {
+  D <- as.matrix(dist(coords))
+  mvtnorm::rmvnorm(1, sigma = exp(-D / range))   # one site-level draw
+}
+
+simulate_dispersal_community <- function(dispersal, coords,
+                                         n_sp, seed = 1) {
+  set.seed(seed)
+  # Latent patchiness shared by all species, scaled by dispersal strength:
+  Z <- dispersal * matrix(rep(spatial_field(coords), times = n_sp),
+                          nrow = nrow(coords), byrow = TRUE)
+  logit_p <- cbind(1, X) %*% rbind(rnorm(n_sp),
+                                   matrix(rnorm(3 * n_sp), 3, n_sp))
+  matrix(rbinom(nrow(X) * n_sp, 1, plogis(logit_p + Z)),
+         nrow(X), n_sp)
+}
+
+coords <- matrix(runif(n_sites * 2), n_sites, 2)
+SP     <- generateSpatialEV(coords)
+
+fit_spatial <- function(Y_comm) {
+  set.seed(1)
+  m <- sjSDM(
+    Y = Y_comm,
+    env = linear(data = X),
+    spatial = linear(data = SP),
+    iter = 100, verbose = FALSE
+  )
+  summary(anova(m))
+}
+
+part_weak   <- fit_spatial(simulate_dispersal_community(0.2, coords, n_species))
+part_strong <- fit_spatial(simulate_dispersal_community(1.5, coords, n_species))
+
+rbind(
+  weak_dispersal_limitation   = part_weak[, "R2 Nagelkerke"],
+  strong_dispersal_limitation = part_strong[, "R2 Nagelkerke"]
+)
+```
+
+The spatial component of the partition should grow markedly under strong
+dispersal limitation, while the pure-environment component stays similar --
+the signal is spatial structure *beyond* what the environment explains.
+
+## Do fits detect environmental filtering?
+
+Environmental filtering is the opposite regime: occurrence is controlled
+mainly by how far each site sits from a species' optimal conditions along
+the environmental gradients. We hold everything else fixed and scale the
+*strength* of the true environmental coefficients. Strongly filtered
+communities should show most explained deviance assigned to the
+environment, with little left for associations.
+
+```{r filtering}
+simulate_filtered_community <- function(beta_scale, seed = 1) {
+  set.seed(seed)
+  Sig <- matrix(0.3, n_species, n_species); diag(Sig) <- 1
+  logit_p_f <- cbind(1, X) %*% rbind(rnorm(n_species),
+                                     beta_scale * beta)
+  Zf <- mvtnorm::rmvnorm(n_sites, sigma = Sig)
+  matrix(rbinom(n_sites * n_species, 1, plogis(logit_p_f + Zf)),
+         n_sites, n_species)
+}
+
+fit_plain <- function(Y_comm) {
+  set.seed(1)
+  m <- sjSDM(
+    Y = Y_comm,
+    env = linear(data = X),
+    biotic = bioticStruct(df = 5),
+    iter = 100, sampling = 100, verbose = FALSE
+  )
+  summary(anova(m))
+}
+
+part_weak_filter   <- fit_plain(simulate_filtered_community(0.25))
+part_strong_filter <- fit_plain(simulate_filtered_community(2.0))
+
+rbind(
+  weak_environmental_filtering   = part_weak_filter[, "R2 Nagelkerke"],
+  strong_environmental_filtering = part_strong_filter[, "R2 Nagelkerke"]
+)
+```
+
+Under strong filtering you should see both a much larger total $R^2$ and a
+partition dominated by the environment-only component. Note the flip side:
+when filtering is weak, residual "associations" soak up more of the
+partition even though the simulated species are nearly independent -- a
+reminder that association estimates absorb any unmodeled structure, not
+only genuine biotic interactions.
 
 # Prediction and model fit
 
