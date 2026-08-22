@@ -5,6 +5,16 @@ Format loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-22
+
+Release title: **Mojo CPU acceleration**.
+
+This release adds a Mojo/MAX native backend for the Monte Carlo
+logit/probit likelihood and its gradients on Apple Silicon CPUs,
+enabled by default in `auto` mode whenever the prebuilt worker binary
+is present (see `Code/sjSDM_mojo_tutorial.Rmd` for setup). It also
+includes all Apple Silicon compatibility work since v0.1.0.
+
 ### Added
 
 - **Phase 2 Mojo gradient kernel** (`work/mojo-backend/mojo/mc_logit_grad.mojo`):
