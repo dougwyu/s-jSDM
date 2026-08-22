@@ -66,8 +66,8 @@ The `-O 3` flag matters: unoptimized builds are ~50x slower. Binaries embed
 absolute paths, so redo these two commands after moving or re-cloning the
 repository.
 
-In R, point `reticulate` at the pinned environment **before**
-`library(sjSDM)`:
+In R, load the package from the checkout (this is the supported way to use
+the fork -- see the note below on why not `library(sjSDM)`):
 
 ```{r setup-load, eval=FALSE}
 Sys.setenv(RETICULATE_PYTHON = here::here(
@@ -76,6 +76,13 @@ Sys.setenv(RETICULATE_PYTHON = here::here(
 devtools::load_all(here::here("sjSDM"), quiet = TRUE)
 is_torch_available()
 ```
+
+> **Why not `library(sjSDM)`?** If you install this fork as a regular
+> package, the installed copy looks for the Mojo worker *inside your R
+> library*, won't find it, and silently falls back to PyTorch -- no error,
+> just no acceleration. If you prefer a normal install, set
+> `SJSDM_MOJO_SERVER_BIN` to the absolute path of
+> `work/mojo-backend/mc_grad_server_bin` before fitting.
 
 That's it -- the Mojo backend is used **automatically** whenever the worker
 binary exists and the fit runs on CPU float32 logit/probit. Control it with
@@ -97,8 +104,7 @@ models, plots, benchmarking torch vs. Mojo, and troubleshooting -- see
 ## Basic workflow
 
 ```{r workflow, eval=FALSE}
-library(sjSDM)
-
+# after the setup chunk above (load_all + RETICULATE_PYTHON):
 set.seed(42)
 community <- simulate_SDM(sites = 100, species = 10, env = 3)
 Env <- community$env_weights
