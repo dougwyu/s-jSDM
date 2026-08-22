@@ -7,6 +7,7 @@ output:
     toc: true
     toc_depth: 2
     number_sections: true
+---> **Why not `library(sjSDM)`?** If you install this fork as a regular package, the installed copy looks for the Mojo worker *inside your R library*, won't find it, and silently falls back to PyTorch -- no error, just no acceleration. Just use `devtools::load_all()` on the checkout as shown above.
 ---
 
 ```{r setup, include=FALSE}
@@ -81,7 +82,7 @@ pixi run mojo build -O 3 mojo/mc_logit_grad_server.mojo -o mc_grad_server_bin
 
 The `-O 3` flag matters: unoptimized Mojo builds are roughly 50x slower. When finished, `work/mojo-backend/mc_grad_server_bin` exists -- that is the accelerated likelihood kernel sjSDM will find and use automatically.
 
-**Step 4 -- point R at the environment and load the package.** Do this at the start of every R session, **before** `library(sjSDM)`:
+**Step 4 -- point R at the environment and load the package.** Do this at the start of every R session:
 
 ```{r reticulate}
 Sys.setenv(RETICULATE_PYTHON = here::here(
@@ -89,14 +90,15 @@ Sys.setenv(RETICULATE_PYTHON = here::here(
 ))
 stopifnot(file.exists(Sys.getenv("RETICULATE_PYTHON")))
 
-# library(sjSDM) works for normal use. When working from the repo checkout,
-# devtools::load_all() runs the repo code (including the patched Python
-# backend) instead of your installed library copy:
+# load_all() runs the REPO code -- including the Python backend in
+# sjSDM/inst/python AND its ability to find the Mojo worker binary:
 devtools::load_all(here::here("sjSDM"), quiet = TRUE)
 
 is_torch_available()
 install_diagnostic()   # detailed report if something is off
 ```
+
+> **Why not `library(sjSDM)`?** If you install this fork as a regular package, the installed copy looks for the Mojo worker *inside your R library*, won't find it, and silently falls back to PyTorch -- no error, just no acceleration. Just use `devtools::load_all()` on the checkout as shown above.
 
 > **Key idea for R users:** R talks to Python through the `reticulate` package, which sjSDM handles internally. The only thing you ever do with Python is tell R where the environment lives via `RETICULATE_PYTHON`. The Mojo binary is a separate native program that sjSDM also finds on its own -- you never invoke it directly.
 
@@ -107,7 +109,7 @@ install_diagnostic()   # detailed report if something is off
 The Mojo backend accelerates the Monte Carlo logit/probit likelihood and its analytic gradients on **CPU**. It consists of the two pieces you built during installation:
 
 | Piece | File | Role |
-|----|----|----|
+|------------------------|------------------------|------------------------|
 | Persistent worker | `work/mojo-backend/mc_grad_server_bin` | Long-lived process computing loss + gradients per training batch |
 | R-side bridge | `sjSDM/inst/python/sjSDM_py/mojo_bridge.py` | Feeds tensors/seeds to the worker through a pipe |
 
@@ -460,8 +462,8 @@ Expect the Mojo run to finish faster (more so at larger `n_sites` / `n_species` 
 # Troubleshooting
 
 | Symptom | Fix |
-|----|----|
-| `is_torch_available()` is FALSE | Run `install_diagnostic()`; most often `RETICULATE_PYTHON` points nowhere or at the wrong environment. Set it before `library(sjSDM)` and restart R. |
+|------------------------------------|------------------------------------|
+| `is_torch_available()` is FALSE | Run `install_diagnostic()`; most often `RETICULATE_PYTHON` points nowhere or at the wrong environment. Set it before loading sjSDM (Step 4) and restart R. |
 | Mojo backend seems ignored | Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3 of installation. Environment variables are read at fit time, but a fresh R session is safest after switching. |
 | Fit diverges to a constant loss | Unstandardized predictors. Use `scale(env)`. Affects both backends equally. |
 | `torch.randn` dimension errors | Fixed in this repository; make sure workers load the patched code (`options(sjSDM.dev = ...)` in parallel CV). |

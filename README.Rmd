@@ -80,9 +80,8 @@ is_torch_available()
 > **Why not `library(sjSDM)`?** If you install this fork as a regular
 > package, the installed copy looks for the Mojo worker *inside your R
 > library*, won't find it, and silently falls back to PyTorch -- no error,
-> just no acceleration. If you prefer a normal install, set
-> `SJSDM_MOJO_SERVER_BIN` to the absolute path of
-> `work/mojo-backend/mc_grad_server_bin` before fitting.
+> just no acceleration. Just use `devtools::load_all()` on the checkout as
+> shown above.
 
 That's it -- the Mojo backend is used **automatically** whenever the worker
 binary exists and the fit runs on CPU float32 logit/probit. Control it with
