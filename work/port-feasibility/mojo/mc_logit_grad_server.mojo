@@ -183,16 +183,14 @@ def main() raises:
             comptime W: Int = 4
             # rank split into a SIMD-full part and a scalar remainder;
             # recomputed once per site (constant across k and s)
+            var sfull = species - (species % W)
             for site in range(start, stop):
                 var zbase = (site - start) * samples * species
                 var llbase = (site - start) * samples
                 var full = rank - (rank % W)
 
-                # Pass 1: dot products once, cache z and ll; streaming LSE
-                var max_ll: Float32 = -3.0e38
-                var run_sum: Float32 = 0.0
+                # Pass 1a: dot products once, cache z
                 for k in range(samples):
-                    var acc_ll: Float32 = 0.0
                     var nz_base = k * sites * rank + site * rank
                     for s in range(species):
                         var dot: Float32 = 0.0
@@ -202,11 +200,26 @@ def main() raises:
                             dot += (nv * sv).reduce_add()
                         for d in range(full, rank):
                             dot += noise[nz_base + d] * sigma[s * rank + d]
-                        var z = alpha * (dot + mu[site * species + s])
-                        zbuf[zbase + k * species + s] = z
+                        zbuf[zbase + k * species + s] = alpha * (dot + mu[site * species + s])
+
+                # Pass 1b: ll via SIMD sigmoid/log across species
+                var max_ll: Float32 = -3.0e38
+                var run_sum: Float32 = 0.0
+                for k in range(samples):
+                    var acc_ll: Float32 = 0.0
+                    var zb = zbase + k * species
+                    var yrow = site * species
+                    for s in range(0, sfull, W):
+                        var zv = (zbuf + zb + s).load[W]()
+                        var e = 1.0 / (1.0 + exp(-zv))
+                        e = e * 0.999999 + 0.0000005
+                        var ys = (y + yrow + s).load[W]()
+                        acc_ll += (ys * log(e) + (1.0 - ys) * log(1.0 - e)).reduce_add()
+                    for s in range(sfull, species):
+                        var z = zbuf[zb + s]
                         var e = 1.0 / (1.0 + exp(-z))
                         e = e * 0.999999 + 0.0000005
-                        var ys = y[site * species + s]
+                        var ys = y[yrow + s]
                         acc_ll += ys * log(e) + (1.0 - ys) * log(1.0 - e)
                     llbuf[llbase + k] = acc_ll
                     if acc_ll > max_ll:
@@ -217,27 +230,49 @@ def main() raises:
 
                 out[site] = -(log(run_sum / Float32(samples)) + max_ll)
 
-                # Pass 2: weights from cached ll, gradients from cached z
+                # Pass 2: weights from cached ll, gradients from cached z.
+                # sigmoid/exp vectorized across species; the gsigma update
+                # stays per-lane because each species owns its own row.
                 var inv_run = 1.0 / run_sum
                 var gmu_base = site * species
+                var wv = SIMD[DType.float32, W](1)
+                var one = SIMD[DType.float32, W](1.0)
+                var c1 = SIMD[DType.float32, W](0.999999)
+                var c2 = SIMD[DType.float32, W](0.0000005)
+                var av = SIMD[DType.float32, W](alpha)
                 for k in range(samples):
                     # softmax over MC samples; sums to 1, so no extra 1/K here
                     # (the 1/K inside log(mean(...)) cancels in the derivative)
                     var w = exp(llbuf[llbase + k] - max_ll) * inv_run
                     var nz_base = k * sites * rank + site * rank
-                    var dzv = SIMD[DType.float32, W](1.0)
-                    for s in range(species):
+                    wv = SIMD[DType.float32, W](w)
+                    for s in range(0, sfull, W):
+                        var zv = (zbuf + zbase + k * species + s).load[W]()
+                        var sig = 1.0 / (1.0 + exp(-zv))
+                        var e = sig * c1 + c2
+                        var ys = (y + gmu_base + s).load[W]()
+                        var dz = (wv * (e - ys) / (e * (one - e)) * c1 * sig * (one - sig) * av)
+                        var old = (gmu + gmu_base + s).load[W]()
+                        (gmu + gmu_base + s).store(old + dz)
+                        for j in range(W):
+                            var dzj = dz[j]
+                            var gp = gsigma_buf + my_gsigma + (s + j) * rank
+                            for d in range(0, full, W):
+                                var nv = (noise + nz_base + d).load[W]()
+                                gp.store(d, (gp + d).load[W]() + SIMD[DType.float32, W](dzj) * nv)
+                            for d in range(full, rank):
+                                gsigma_buf[my_gsigma + (s + j) * rank + d] += dzj * noise[nz_base + d]
+                    for s in range(sfull, species):
                         var sig = 1.0 / (1.0 + exp(-zbuf[zbase + k * species + s]))
                         var e = sig * 0.999999 + 0.0000005
-                        var ys = y[site * species + s]
+                        var ys = y[gmu_base + s]
                         var dz = (w * (e - ys) / (e * (1.0 - e))
                                   * 0.999999 * sig * (1.0 - sig) * alpha)
                         gmu[gmu_base + s] += dz
-                        dzv = SIMD[DType.float32, W](dz)
                         var gp = gsigma_buf + my_gsigma + s * rank
                         for d in range(0, full, W):
                             var nv = (noise + nz_base + d).load[W]()
-                            gp.store(d, (gp + d).load[W]() + dzv * nv)
+                            gp.store(d, (gp + d).load[W]() + SIMD[DType.float32, W](dz) * nv)
                         for d in range(full, rank):
                             gsigma_buf[my_gsigma + s * rank + d] += dz * noise[nz_base + d]
 
