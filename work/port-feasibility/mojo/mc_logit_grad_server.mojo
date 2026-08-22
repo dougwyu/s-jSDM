@@ -1,0 +1,202 @@
+# Persistent-process variant of mc_logit_grad.mojo.
+#
+# Runs as a long-lived worker reading requests from stdin and writing
+# results to stdout (raw little-endian bytes). One request:
+#   header : Int64 sites, Int64 species, Int64 rank, Int64 samples,
+#            UInt32 alpha_bits (IEEE-754 float32 bit pattern)
+#   mu     : sites x species float32
+#   sigma  : species x rank float32
+#   y      : sites x species float32
+#   noise  : samples x sites x rank float32
+# Response:
+#   out    : sites float32
+#   gmu    : sites x species float32
+#   gsigma : species x rank float32
+#
+# A zero-byte read on the header means EOF and exits cleanly.
+#
+# Computation is identical to mc_logit_grad.mojo (see comments there):
+#   z = alpha*(noise . sigma_s + mu_i); E = clip(sigmoid(z))
+#   loss_i = -log(mean_k exp(ll_ik)); softmax weights w_ik
+#   dz includes the alpha factor; sites split into N_CHUNKS chunks with
+#   private per-chunk sigma-gradient buffers merged afterwards.
+
+from max.algorithm import parallelize
+from std.io import FileDescriptor
+from std.math import exp, log
+from std.memory import alloc, dealloc
+from std.sys import argv, stdin, stdout
+
+
+comptime HEADER_BYTES = 36
+
+
+def read_exact(mut sin: FileDescriptor, ptr: Pointer[UInt8, MutUntrackedOrigin], n: Int) raises -> Bool:
+    # Pipes can return short reads; loop until the span is filled.
+    var done: Int = 0
+    while done < n:
+        var sub = Span[UInt8](unsafe_ptr=ptr + done, length=n - done)
+        var got = sin.read_bytes(sub)
+        if got == 0:
+            return False
+        done += got
+    return True
+
+
+def main() raises:
+    var sin = stdin
+    var sout = stdout
+
+    var hbuf = alloc[UInt8](HEADER_BYTES)
+    # Reusable buffers: training uses constant shapes per run, so these
+    # allocate once. A shape change reallocates (the old block is
+    # reclaimed when the process exits; acceptable for this prototype).
+    # Keyed on the FULL shape — keying on any single dimension (e.g.
+    # sites) reuses stale/undersized buffers when only species or rank
+    # changes between requests in one process.
+    var cap_shape: Int = -1
+    var mu = alloc[Float32](0)
+    var sigma = alloc[Float32](0)
+    var y = alloc[Float32](0)
+    var noise = alloc[Float32](0)
+    comptime N_CHUNKS = 16
+    # Output and scratch buffers, reused across requests like the inputs.
+    var out = alloc[Float32](0)
+    var gmu = alloc[Float32](0)
+    var gsigma_buf = alloc[Float32](0)
+    var gsigma = alloc[Float32](0)
+    var zbuf_all = alloc[Float32](0)
+    var llbuf_all = alloc[Float32](0)
+
+    while True:
+        if not read_exact(sin, hbuf, HEADER_BYTES):
+            break
+        var h = Span[UInt8](unsafe_ptr=hbuf, length=HEADER_BYTES)
+        var dims = h.unsafe_ptr().unsafe_bitcast[Int64]()
+        var sites = Int(dims[0])
+        var species = Int(dims[1])
+        var rank = Int(dims[2])
+        var samples = Int(dims[3])
+        var alpha = h.unsafe_ptr().unsafe_bitcast[Float32]()[8]
+
+        # shape fingerprint; each dimension < 2^13 keeps this exact
+        var shape_key = (((sites * 8192) + species) * 8192 + rank) * 8192 + samples
+        if shape_key != cap_shape:
+            cap_shape = shape_key
+            mu = alloc[Float32](sites * species)
+            sigma = alloc[Float32](species * rank)
+            y = alloc[Float32](sites * species)
+            noise = alloc[Float32](samples * sites * rank)
+            out = alloc[Float32](sites)
+            gmu = alloc[Float32](sites * species)
+            gsigma_buf = alloc[Float32](N_CHUNKS * species * rank)
+            gsigma = alloc[Float32](species * rank)
+            var chunk = (sites + N_CHUNKS - 1) // N_CHUNKS
+            zbuf_all = alloc[Float32](N_CHUNKS * chunk * samples * species)
+            llbuf_all = alloc[Float32](N_CHUNKS * chunk * samples)
+
+        if not read_exact(sin, mu.bitcast[UInt8](), sites * species * 4):
+            break
+        if not read_exact(sin, sigma.bitcast[UInt8](), species * rank * 4):
+            break
+        if not read_exact(sin, y.bitcast[UInt8](), sites * species * 4):
+            break
+        if not read_exact(sin, noise.bitcast[UInt8](), samples * sites * rank * 4):
+            break
+
+        comptime N_CHUNKS = 16
+
+        # alloc does not zero-initialize
+        for i in range(sites * species):
+            gmu[i] = 0.0
+        for i in range(N_CHUNKS * species * rank):
+            gsigma_buf[i] = 0.0
+
+        var chunk = (sites + N_CHUNKS - 1) // N_CHUNKS
+
+        @parameter
+        def chunk_loss(cid: Int):
+            var start = cid * chunk
+            var stop = min(start + chunk, sites)
+            var my_gsigma = cid * species * rank
+
+            # Per-chunk scratch: cached z_ks = alpha*(noise_k . sigma_s + mu_i)
+            # and per-sample log-likelihoods ll_ik, so the noise dot products
+            # are computed exactly once per site (was three times).
+            var zbuf = zbuf_all + cid * chunk * samples * species
+            var llbuf = llbuf_all + cid * chunk * samples
+
+            comptime W: Int = 4
+            # rank split into a SIMD-full part and a scalar remainder;
+            # recomputed once per site (constant across k and s)
+            for site in range(start, stop):
+                var zbase = (site - start) * samples * species
+                var llbase = (site - start) * samples
+                var full = rank - (rank % W)
+
+                # Pass 1: dot products once, cache z and ll; streaming LSE
+                var max_ll: Float32 = -3.0e38
+                var run_sum: Float32 = 0.0
+                for k in range(samples):
+                    var acc_ll: Float32 = 0.0
+                    var nz_base = k * sites * rank + site * rank
+                    for s in range(species):
+                        var dot: Float32 = 0.0
+                        for d in range(0, full, W):
+                            var nv = (noise + nz_base + d).load[W]()
+                            var sv = (sigma + s * rank + d).load[W]()
+                            dot += (nv * sv).reduce_add()
+                        for d in range(full, rank):
+                            dot += noise[nz_base + d] * sigma[s * rank + d]
+                        var z = alpha * (dot + mu[site * species + s])
+                        zbuf[zbase + k * species + s] = z
+                        var e = 1.0 / (1.0 + exp(-z))
+                        e = e * 0.999999 + 0.0000005
+                        var ys = y[site * species + s]
+                        acc_ll += ys * log(e) + (1.0 - ys) * log(1.0 - e)
+                    llbuf[llbase + k] = acc_ll
+                    if acc_ll > max_ll:
+                        run_sum = run_sum * exp(max_ll - acc_ll) + 1.0
+                        max_ll = acc_ll
+                    else:
+                        run_sum += exp(acc_ll - max_ll)
+
+                out[site] = -(log(run_sum / Float32(samples)) + max_ll)
+
+                # Pass 2: weights from cached ll, gradients from cached z
+                var inv_run = 1.0 / run_sum
+                var gmu_base = site * species
+                for k in range(samples):
+                    # softmax over MC samples; sums to 1, so no extra 1/K here
+                    # (the 1/K inside log(mean(...)) cancels in the derivative)
+                    var w = exp(llbuf[llbase + k] - max_ll) * inv_run
+                    var nz_base = k * sites * rank + site * rank
+                    var dzv = SIMD[DType.float32, W](1.0)
+                    for s in range(species):
+                        var sig = 1.0 / (1.0 + exp(-zbuf[zbase + k * species + s]))
+                        var e = sig * 0.999999 + 0.0000005
+                        var ys = y[site * species + s]
+                        var dz = (w * (e - ys) / (e * (1.0 - e))
+                                  * 0.999999 * sig * (1.0 - sig) * alpha)
+                        gmu[gmu_base + s] += dz
+                        dzv = SIMD[DType.float32, W](dz)
+                        var gp = gsigma_buf + my_gsigma + s * rank
+                        for d in range(0, full, W):
+                            var nv = (noise + nz_base + d).load[W]()
+                            gp.store(d, (gp + d).load[W]() + dzv * nv)
+                        for d in range(full, rank):
+                            gsigma_buf[my_gsigma + s * rank + d] += dz * noise[nz_base + d]
+
+        parallelize[chunk_loss](N_CHUNKS)
+
+        # merge per-chunk sigma gradients
+        for s in range(species):
+            for d in range(rank):
+                var acc: Float32 = 0.0
+                for c in range(N_CHUNKS):
+                    acc += gsigma_buf[c * species * rank + s * rank + d]
+                gsigma[s * rank + d] = acc
+
+        sout.write_bytes(Span[UInt8](unsafe_ptr=out.bitcast[UInt8](), length=sites * 4))
+        sout.write_bytes(Span[UInt8](unsafe_ptr=gmu.bitcast[UInt8](), length=sites * species * 4))
+        sout.write_bytes(Span[UInt8](unsafe_ptr=gsigma.bitcast[UInt8](), length=species * rank * 4))

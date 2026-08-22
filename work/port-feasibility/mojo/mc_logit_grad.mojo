@@ -4,6 +4,7 @@
 #   argv[9]  out    : sites               (per-site loss)
 #   argv[10] gmu    : sites x species     (d total_loss / d mu)
 #   argv[11] gsigma : species x rank      (d total_loss / d sigma)
+#   argv[12] alpha  : scale factor (optional, default 1.0); z = alpha*(noise . sigma + mu)
 #
 # total_loss = sum_i loss_i,  loss_i = -log(mean_k exp(ll_ik))
 #   z_iks = noise_kid . sigma_sd + mu_is ; E = clip(sigmoid(z))
@@ -44,6 +45,10 @@ def main() raises:
     var y = read_f32(args[7])
     var noise = read_f32(args[8])
 
+    var alpha: Float32 = 1.0
+    if len(args) > 12:
+        alpha = Float32(atof(args[12]))
+
     comptime N_CHUNKS = 16
 
     var out = alloc[Float32](sites)
@@ -74,7 +79,7 @@ def main() raises:
                     var dot: Float32 = 0.0
                     for d in range(rank):
                         dot += noise[k * sites * rank + site * rank + d] * sigma[s * rank + d]
-                    var e = 1.0 / (1.0 + exp(-(dot + mu[site * species + s])))
+                    var e = 1.0 / (1.0 + exp(-alpha * (dot + mu[site * species + s])))
                     e = e * 0.999999 + 0.0000005
                     var ys = y[site * species + s]
                     acc_ll += ys * log(e) + (1.0 - ys) * log(1.0 - e)
@@ -95,7 +100,7 @@ def main() raises:
                     var dot: Float32 = 0.0
                     for d in range(rank):
                         dot += noise[k * sites * rank + site * rank + d] * sigma[s * rank + d]
-                    var e = 1.0 / (1.0 + exp(-(dot + mu[site * species + s])))
+                    var e = 1.0 / (1.0 + exp(-alpha * (dot + mu[site * species + s])))
                     e = e * 0.999999 + 0.0000005
                     var ys = y[site * species + s]
                     acc_ll += ys * log(e) + (1.0 - ys) * log(1.0 - e)
@@ -107,12 +112,12 @@ def main() raises:
                     var dot: Float32 = 0.0
                     for d in range(rank):
                         dot += noise[k * sites * rank + site * rank + d] * sigma[s * rank + d]
-                    var z = dot + mu[site * species + s]
+                    var z = alpha * (dot + mu[site * species + s])
                     var sig = 1.0 / (1.0 + exp(-z))
                     var e = sig * 0.999999 + 0.0000005
                     var ys = y[site * species + s]
                     var dz = (w * (e - ys) / (e * (1.0 - e))
-                              * 0.999999 * sig * (1.0 - sig))
+                              * 0.999999 * sig * (1.0 - sig) * alpha)
                     gmu[gmu_base + s] += dz
                     for d in range(rank):
                         gsigma_buf[my_gsigma + s * rank + d] += dz * noise[k * sites * rank + site * rank + d]
