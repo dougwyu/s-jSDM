@@ -109,7 +109,7 @@ install_diagnostic()   # detailed report if something is off
 The Mojo backend accelerates the Monte Carlo logit/probit likelihood and its analytic gradients on **CPU**. It consists of the two pieces you built during installation:
 
 | Piece | File | Role |
-|------------------------|------------------------|------------------------|
+|----|----|----|
 | Persistent worker | `work/mojo-backend/mc_grad_server_bin` | Long-lived process computing loss + gradients per training batch |
 | R-side bridge | `sjSDM/inst/python/sjSDM_py/mojo_bridge.py` | Feeds tensors/seeds to the worker through a pipe |
 
@@ -462,7 +462,7 @@ Expect the Mojo run to finish faster (more so at larger `n_sites` / `n_species` 
 # Troubleshooting
 
 | Symptom | Fix |
-|------------------------------------|------------------------------------|
+|----|----|
 | `is_torch_available()` is FALSE | Run `install_diagnostic()`; most often `RETICULATE_PYTHON` points nowhere or at the wrong environment. Set it before loading sjSDM (Step 4) and restart R. |
 | Mojo backend seems ignored | Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3 of installation. Environment variables are read at fit time, but a fresh R session is safest after switching. |
 | Fit diverges to a constant loss | Unstandardized predictors. Use `scale(env)`. Affects both backends equally. |
