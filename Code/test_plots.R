@@ -1,4 +1,4 @@
-Sys.setenv(RETICULATE_PYTHON = "/Users/douglasyu/src/s-jSDM/work/port-feasibility/.pixi/envs/default/bin/python")
+Sys.setenv(RETICULATE_PYTHON = "/Users/douglasyu/src/s-jSDM/work/mojo-backend/.pixi/envs/default/bin/python")
 devtools::load_all("/Users/douglasyu/src/s-jSDM/sjSDM", quiet = TRUE)
 
 set.seed(42)

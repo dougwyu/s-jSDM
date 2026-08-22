@@ -46,7 +46,7 @@ The package depends on considerably more than tensors: `torch.nn`, `torch.optim`
 
 ## Local feasibility result
 
-This Mac is an Apple M4 (ARM64) running macOS 26.6.2 with Xcode 26.6. The feasibility environment is project-local at `work/port-feasibility/.venv`: Mojo 1.1.0.dev2026082105, MAX 26.6.0.dev2026082105, PyTorch 2.13.0, Pyro 1.9.1, NumPy, PyTest, `torch-optimizer`, `madgrad`, and the remaining Python test dependencies are installed. The Metal Toolchain 17F109 is also installed and `metallib` is available. PyTorch reports both MPS built and MPS available.
+This Mac is an Apple M4 (ARM64) running macOS 26.6.2 with Xcode 26.6. The feasibility environment is project-local at `work/mojo-backend/.venv`: Mojo 1.1.0.dev2026082105, MAX 26.6.0.dev2026082105, PyTorch 2.13.0, Pyro 1.9.1, NumPy, PyTest, `torch-optimizer`, `madgrad`, and the remaining Python test dependencies are installed. The Metal Toolchain 17F109 is also installed and `metallib` is available. PyTorch reports both MPS built and MPS available.
 
 Mojo compiled and ran a disposable smoke program successfully. Its current nightly syntax uses `def main()`; the older `fn main()` syntax is rejected.
 

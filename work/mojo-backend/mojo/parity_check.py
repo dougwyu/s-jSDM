@@ -21,7 +21,7 @@ sys.path.insert(0, "sjSDM/inst/python")
 MOJO = ("pixi", "run", "mojo", "run")
 KERNEL = "mojo/mc_logit_loss.mojo"
 GRAD_KERNEL = "mojo/mc_logit_grad.mojo"
-TMP = Path("work/port-feasibility/mojo/tmp").resolve()
+TMP = Path("work/mojo-backend/mojo/tmp").resolve()
 
 
 def make_inputs(sites, species, rank, samples, seed=7):
@@ -50,7 +50,7 @@ def run_mojo(kernel, mu, sigma, y, noise, sites, species, rank, samples, out_nam
            str(TMP / "mu.bin"), str(TMP / "sigma.bin"), str(TMP / "y.bin"),
            str(TMP / "noise.bin")]
     cmd += [str(TMP / f"{n}.bin") for n in out_names]
-    subprocess.run(cmd, check=True, cwd="work/port-feasibility",
+    subprocess.run(cmd, check=True, cwd="work/mojo-backend",
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {n: np.fromfile(TMP / f"{n}.bin", dtype=np.float32) for n in out_names}
 

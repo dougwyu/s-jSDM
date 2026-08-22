@@ -1,7 +1,7 @@
 # Walkthrough: fitting sjSDM models using the pixi Python environment
 #
 # This script uses the PyTorch 2.5.1 environment installed at
-# work/port-feasibility/.pixi/envs/default (NOT the old r-sjsdm conda env).
+# work/mojo-backend/.pixi/envs/default (NOT the old r-sjsdm conda env).
 # Run top-to-bottom, e.g. with source("Code/run_sjSDM.R") or interactively.
 
 ## ---- 0. Point reticulate at the pixi Python -------------------------------
@@ -10,7 +10,7 @@
 # here() resolves the repo root via sjSDM.Rproj, so it works regardless
 # of the current working directory.
 Sys.setenv(RETICULATE_PYTHON = here::here(
-  "work/port-feasibility/.pixi/envs/default/bin/python"
+  "work/mojo-backend/.pixi/envs/default/bin/python"
 ))
 stopifnot(file.exists(Sys.getenv("RETICULATE_PYTHON")))
 

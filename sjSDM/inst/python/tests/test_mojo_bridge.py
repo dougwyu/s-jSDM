@@ -21,7 +21,7 @@ ONESHOT_BIN = mojo_bridge._oneshot_path()
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(SERVER_BIN),
-    reason="Mojo worker binary not built (work/port-feasibility/mc_grad_server_bin)",
+    reason="Mojo worker binary not built (work/mojo-backend/mc_grad_server_bin)",
 )
 
 
@@ -258,7 +258,7 @@ class TestGuards:
 
 @pytest.mark.skipif(
     not os.path.exists(ONESHOT_BIN),
-    reason="Mojo one-shot binary not built (work/port-feasibility/mc_grad_bin)",
+    reason="Mojo one-shot binary not built (work/mojo-backend/mc_grad_bin)",
 )
 class TestOneshotTransport:
     def test_matches_persistent_results(self):

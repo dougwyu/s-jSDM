@@ -14,7 +14,7 @@ The current performance-porting objective is to evaluate an incremental MAX/Mojo
 - `sjSDM/inst/python/tests/`: Python tests.
 - `sjSDM/tests/`: R tests.
 - `Code/`: experiments, benchmarks, and working scripts.
-- `work/port-feasibility/`: project-local pixi environment for Mojo, MAX, PyTorch, and Python dependencies.
+- `work/mojo-backend/`: project-local pixi environment for Mojo, MAX, PyTorch, and Python dependencies.
 - `Feasibility_study.md`: MAX/Mojo feasibility assessment.
 
 ## Runtime environment
@@ -22,7 +22,7 @@ The current performance-porting objective is to evaluate an incremental MAX/Mojo
 Use the project-local pixi Python rather than the deleted legacy `r-sjsdm` conda environment:
 
 ```text
-work/port-feasibility/.pixi/envs/default/bin/python
+work/mojo-backend/.pixi/envs/default/bin/python
 ```
 
 The validated environment currently contains Mojo 1.0.0, MAX 26.5.0, PyTorch 2.5.1, and the sjSDM Python test dependencies. PyTorch reports Apple MPS built and available on the target Mac.
@@ -31,7 +31,7 @@ In R, set `RETICULATE_PYTHON` before importing sjSDM or any Python-dependent pac
 
 ```r
 Sys.setenv(RETICULATE_PYTHON = here::here(
-  "work/port-feasibility/.pixi/envs/default/bin/python"
+  "work/mojo-backend/.pixi/envs/default/bin/python"
 ))
 ```
 
@@ -49,7 +49,7 @@ Run the Python suite from the package's Python directory using the pixi interpre
 
 ```bash
 cd sjSDM/inst/python
-../../../../work/port-feasibility/.pixi/envs/default/bin/python -m pytest tests -q
+../../../../work/mojo-backend/.pixi/envs/default/bin/python -m pytest tests -q
 ```
 
 For a quick R walkthrough, use:
@@ -121,7 +121,7 @@ The Phase 0 CPU/MPS benchmark is in `Code/benchmarks/bench_baseline.py`. MPS is 
 
 ## Phase 1/2 Mojo port status
 
-Standalone Mojo kernels are in `work/port-feasibility/mojo/` and are not integrated into the R or Python training path yet:
+Standalone Mojo kernels are in `work/mojo-backend/mojo/` and are not integrated into the R or Python training path yet:
 
 - `mc_logit_loss.mojo`: binary logit Monte Carlo likelihood forward pass, using externally supplied float32 noise and parallelized across sites with `max.algorithm.parallelize`.
 - `mc_logit_grad.mojo`: analytic gradients for `mu` and `sigma`, using 16 site chunks with private sigma-gradient buffers merged after the parallel work.
@@ -140,12 +140,12 @@ Important implementation lessons: externally supplied noise is required for dete
 
 The narrow autograd bridge is implemented:
 
-- `sjSDM/inst/python/sjSDM_py/mojo_bridge.py`: `torch.autograd.Function` that shells out to the prebuilt binary `work/port-feasibility/mc_grad_bin` (forward + analytic `mu`/`sigma` gradients). Noise is generated with `torch.randn` inside the bridge so RNG streams match the PyTorch path exactly under a fixed seed.
+- `sjSDM/inst/python/sjSDM_py/mojo_bridge.py`: `torch.autograd.Function` that shells out to the prebuilt binary `work/mojo-backend/mc_grad_bin` (forward + analytic `mu`/`sigma` gradients). Noise is generated with `torch.randn` inside the bridge so RNG streams match the PyTorch path exactly under a fixed seed.
 - `mc_logit_grad.mojo` now accepts an optional trailing `alpha` argument (argv[12], default 1.0) so probit's 1.7012 scaling is supported; gradient parity re-passed after the change.
 - `Model_sjSDM._build_loss_function` uses the bridge for logit/probit links when `SJSDM_MOJO_BACKEND=1`. Restrictions: CPU float32 only, no NaN responses, and backward requires uniform grad_output (holds for `loss.mean()` in `fit()`).
 - Validation: `Code/benchmarks/train_parity_mojo.py` shows bitwise-identical training trajectories over 30 epochs vs the PyTorch loss, plus end-to-end timing.
 - End-to-end timing result (one-shot transport): subprocess + file-I/O overhead (~60ms per batch call) dominated; mojo ~5x slower at 3000x60 and slightly slower at 10000x200.
-- Persistent-process bridge (2026-08-21): `mojo/mc_logit_grad_server.mojo` is a long-lived worker reading a 36-byte header + raw float32 tensors from stdin and writing loss/gmu/gsigma to stdout; built as `work/port-feasibility/mc_grad_server_bin`. `mojo_bridge.py` uses it by default (`SJSDM_MOJO_PERSISTENT=0` falls back to the one-shot file transport). Mojo pipe API notes: `std.io.FileDescriptor`, `stdin.read_bytes(Span)`/`stdout.write_bytes(Span)`; `read_bytes` needs a `mut` parameter and short reads must be looped; globals are unsupported; `std.memory` has no `free`/`dealloc` for raw `alloc` pointers, so the server reuses buffers across requests (reallocates on shape change without freeing).
+- Persistent-process bridge (2026-08-21): `mojo/mc_logit_grad_server.mojo` is a long-lived worker reading a 36-byte header + raw float32 tensors from stdin and writing loss/gmu/gsigma to stdout; built as `work/mojo-backend/mc_grad_server_bin`. `mojo_bridge.py` uses it by default (`SJSDM_MOJO_PERSISTENT=0` falls back to the one-shot file transport). Mojo pipe API notes: `std.io.FileDescriptor`, `stdin.read_bytes(Span)`/`stdout.write_bytes(Span)`; `read_bytes` needs a `mut` parameter and short reads must be looped; globals are unsupported; `std.memory` has no `free`/`dealloc` for raw `alloc` pointers, so the server reuses buffers across requests (reallocates on shape change without freeing).
 - Persistent-bridge results: trajectory parity still bitwise exact (30 epochs); small-workload overhead eliminated (3000x60 ties torch at ~0.5s/5 epochs). Remaining gap is kernel compute, not transport: per 500x200xrank5xK400 batch with backward, Mojo ~365ms vs PyTorch ~241ms — the gradient kernel's three passes over the noise dot products lose to fused autograd at these shapes.
 - Kernel z-caching optimization (2026-08-21): `mc_logit_grad_server.mojo` now caches `z_ks = alpha*(noise_k . sigma_s + mu_i)` and per-sample `ll_ik` in per-chunk scratch buffers, computing each noise dot product exactly once instead of three times. Parity vs same-noise PyTorch reference re-passed (loss <=1.5e-5, gmu <=8e-6, gsigma <=2e-4 across three shape/alpha combos). Results: per-batch 500x200xrank5xK400 Mojo ~233ms vs PyTorch ~261ms; end-to-end 10000 sites x 200 species x 2 epochs 9.4s vs 12.4s (~1.3x); small workload 3000x60 now ~1.7x faster. Trajectory parity remains bitwise exact and the Python suite passes unchanged. The Mojo persistent path is now end-to-end faster than the PyTorch CPU path on tested workloads, but is still opt-in via `SJSDM_MOJO_BACKEND=1`.
 - RNG divergence traced (2026-08-22): NOT an RNG issue. `Code/trace_rng.R` monkeypatches `torch.randn`/`manual_seed` to log shape + content hash of every draw during fixed-seed R fits; torch and Mojo streams are bitwise identical over all 241 draws. The R-level loss-history gap (~1e-2, fluctuating without growth) comes from float32 arithmetic differences between the Mojo kernel's reductions and torch's einsum path, which perturb weight updates slightly; both backends converge to the same loss level. Benign for a Monte Carlo method, but cross-backend fits are statistically equivalent rather than reproducible bit-for-bit through the full R path.
@@ -173,11 +173,11 @@ Relevant commits after the release include `5d9f66f` (parallel forward kernel), 
 
 Avoid committing local caches, generated plots, R workspace files, Python `__pycache__` directories, or temporary benchmark output unless explicitly required. Generated walkthrough plots belong under `Code/plots/` when they are intentionally retained.
 
-`Code/plots/`, `Code/run_sjSDM.R`, and other exploratory working scripts may remain untracked unless explicitly requested. The pixi lockfile `work/port-feasibility/pixi.lock` was intentionally left local; `pixi.toml` is committed for the environment specification.
+`Code/plots/`, `Code/run_sjSDM.R`, and other exploratory working scripts may remain untracked unless explicitly requested. The pixi lockfile `work/mojo-backend/pixi.lock` was intentionally left local; `pixi.toml` is committed for the environment specification.
 
-Use `pixi run mojo ...` from `work/port-feasibility/` so the Mojo standard library and MAX modules resolve correctly. Directly invoking the environment's `mojo` binary without pixi activation may fail to locate `std`.
+Use `pixi run mojo ...` from `work/mojo-backend/` so the Mojo standard library and MAX modules resolve correctly. Directly invoking the environment's `mojo` binary without pixi activation may fail to locate `std`.
 
-The Mojo parity harness writes temporary raw float32 files under `work/port-feasibility/mojo/tmp/` and invokes the kernel via `pixi run mojo run`; use a prebuilt binary with `pixi run mojo build` for timing rather than including compilation time.
+The Mojo parity harness writes temporary raw float32 files under `work/mojo-backend/mojo/tmp/` and invokes the kernel via `pixi run mojo run`; use a prebuilt binary with `pixi run mojo build` for timing rather than including compilation time.
 
 ## Release history
 

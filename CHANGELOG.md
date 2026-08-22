@@ -7,7 +7,7 @@ Format loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **Phase 2 Mojo gradient kernel** (`work/port-feasibility/mojo/mc_logit_grad.mojo`):
+- **Phase 2 Mojo gradient kernel** (`work/mojo-backend/mojo/mc_logit_grad.mojo`):
   analytic dL/dmu and dL/dsigma for the binary logit MC likelihood,
   parallelized over site chunks with per-chunk private sigma-gradient
   buffers merged serially. Validated against central finite differences of
@@ -16,7 +16,7 @@ Format loosely based on [Keep a Changelog](https://keepachangelog.com/).
   not zero-initialize (garbage accumulated into gradients), and the MC
   softmax weights must not include an extra 1/K factor (it cancels in the
   derivative of log-mean-exp).
-- **Phase 1 Mojo forward kernel** (`work/port-feasibility/mojo/`): binary
+- **Phase 1 Mojo forward kernel** (`work/mojo-backend/mojo/`): binary
   logit Monte Carlo likelihood forward pass, parallelized across sites on
   the CPU thread pool via `max.algorithm.parallelize`. Externally supplied
   noise (no RNG in the kernel) enables exact parity testing.

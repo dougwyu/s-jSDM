@@ -5,7 +5,7 @@ forward+backward on a fixed batch of sites, using identical tensor shapes.
 Reports the ratio torch/mojo (>1 means Mojo faster).
 
 Usage (from repository root):
-  work/port-feasibility/.pixi/envs/default/bin/python \
+  work/mojo-backend/.pixi/envs/default/bin/python \
     Code/benchmarks/bench_grid_mojo.py
 """
 

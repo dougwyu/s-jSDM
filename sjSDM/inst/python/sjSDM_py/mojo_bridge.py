@@ -41,14 +41,14 @@ _REPO_ROOT = os.path.abspath(
 def _server_path() -> str:
     return os.environ.get(
         "SJSDM_MOJO_SERVER_BIN",
-        os.path.join(_REPO_ROOT, "work", "port-feasibility", "mc_grad_server_bin"),
+        os.path.join(_REPO_ROOT, "work", "mojo-backend", "mc_grad_server_bin"),
     )
 
 
 def _oneshot_path() -> str:
     return os.environ.get(
         "SJSDM_MOJO_BIN",
-        os.path.join(_REPO_ROOT, "work", "port-feasibility", "mc_grad_bin"),
+        os.path.join(_REPO_ROOT, "work", "mojo-backend", "mc_grad_bin"),
     )
 
 
@@ -74,7 +74,7 @@ class _PersistentWorker:
             raise RuntimeError(
                 "Mojo server binary not found; build it with "
                 "`pixi run mojo build mojo/mc_logit_grad_server.mojo "
-                "-o mc_grad_server_bin` in work/port-feasibility/ or set "
+                "-o mc_grad_server_bin` in work/mojo-backend/ or set "
                 "SJSDM_MOJO_SERVER_BIN."
             ) from e
 

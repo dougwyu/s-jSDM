@@ -37,9 +37,9 @@ sjSDM/vignettes/sjSDM_Introduction.R
 .DS_Store
 .DS_Store
 .posit/assistant
-work/port-feasibility/mojo/mc_loss_bin
-work/port-feasibility/mojo/tmp/
-work/port-feasibility/mc_grad_bin
-work/port-feasibility/mc_grad_server_bin
+work/mojo-backend/mojo/mc_loss_bin
+work/mojo-backend/mojo/tmp/
+work/mojo-backend/mc_grad_bin
+work/mojo-backend/mc_grad_server_bin
 __pycache__/
 Code/plots/

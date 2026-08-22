@@ -6,7 +6,7 @@ training trajectories, and reports end-to-end wall-clock times on a
 larger workload.
 
 Usage (from repository root):
-  work/port-feasibility/.pixi/envs/default/bin/python \
+  work/mojo-backend/.pixi/envs/default/bin/python \
     Code/benchmarks/train_parity_mojo.py
 """
 
