@@ -39,3 +39,6 @@ sjSDM/vignettes/sjSDM_Introduction.R
 .posit/assistant
 work/port-feasibility/mojo/mc_loss_bin
 work/port-feasibility/mojo/tmp/
+work/port-feasibility/mc_grad_bin
+work/port-feasibility/mc_grad_server_bin
+__pycache__/
