@@ -3,11 +3,13 @@
 # Runs as a long-lived worker reading requests from stdin and writing
 # results to stdout (raw little-endian bytes). One request:
 #   header : Int64 sites, Int64 species, Int64 rank, Int64 samples,
-#            UInt32 alpha_bits (IEEE-754 float32 bit pattern)
+#            UInt32 alpha_bits (IEEE-754 float32 bit pattern),
+#            UInt32 mode (0 = noise payload, 1 = seed)
 #   mu     : sites x species float32
 #   sigma  : species x rank float32
 #   y      : sites x species float32
-#   noise  : samples x sites x rank float32
+#   mode 0 : noise : samples x sites x rank float32
+#   mode 1 : seed   : UInt64 (server generates standard normals)
 # Response:
 #   out    : sites float32
 #   gmu    : sites x species float32
@@ -20,15 +22,59 @@
 #   loss_i = -log(mean_k exp(ll_ik)); softmax weights w_ik
 #   dz includes the alpha factor; sites split into N_CHUNKS chunks with
 #   private per-chunk sigma-gradient buffers merged afterwards.
+#
+# Seed mode generates N(0,1) draws as box_muller(splitmix64(seed ^ idx)),
+# one independent stream element per noise entry, so generation can be
+# parallelized without inter-chunk dependencies.
 
 from max.algorithm import parallelize
 from std.io import FileDescriptor
-from std.math import exp, log
+from std.math import exp, log, sqrt
 from std.memory import alloc, dealloc
 from std.sys import argv, stdin, stdout
 
 
-comptime HEADER_BYTES = 36
+comptime HEADER_BYTES = 40
+comptime BLOCK = 4096
+comptime N_GEN_BLOCKS = 64
+
+
+def splitmix64(state: UInt64) -> UInt64:
+    var mut_state = state
+    mut_state = mut_state + UInt64(0x9E3779B97F4A7C15)
+    var z = mut_state
+    z = (z ^ (z >> 30)) * UInt64(0xBF58476D1CE4E5B9)
+    z = (z ^ (z >> 27)) * UInt64(0x94D049BB133111EB)
+    return z ^ (z >> 31)
+
+
+def gen_noise(mut noise: Pointer[Float32, MutUntrackedOrigin], n: Int, seed: UInt64):
+    # Fill noise[0..n) with standard normals; element i uses
+    # splitmix64 seeded with seed ^ i so blocks are independent and
+    # generation parallelizes without cross-block dependencies.
+    @parameter
+    def fill(block: Int):
+        var start = block * BLOCK
+        var stop = min(start + BLOCK, n)
+        var idx = start
+        # Marsaglia polar method: no trig; on rejection the attempt
+        # counter is mixed into the draws so retries see fresh uniforms.
+        while idx < stop:
+            var attempt: UInt64 = 0
+            while True:
+                var u1f = Float32((splitmix64(seed ^ UInt64(idx) ^ (attempt << 32)) >> 8) & 0xFFFFFF) * (1.0 / 8388608.0) - 1.0
+                var u2f = Float32((splitmix64(seed ^ UInt64(idx + 1) ^ (attempt << 32)) >> 8) & 0xFFFFFF) * (1.0 / 8388608.0) - 1.0
+                var ss = u1f * u1f + u2f * u2f
+                if ss < 1.0 and ss > 0.0:
+                    var fac = sqrt(-2.0 * log(ss) / ss)
+                    noise[idx] = u1f * fac
+                    if idx + 1 < n:
+                        noise[idx + 1] = u2f * fac
+                    break
+                attempt += 1
+            idx += 2
+
+    parallelize[fill](N_GEN_BLOCKS)
 
 
 def read_exact(mut sin: FileDescriptor, ptr: Pointer[UInt8, MutUntrackedOrigin], n: Int) raises -> Bool:
@@ -48,6 +94,7 @@ def main() raises:
     var sout = stdout
 
     var hbuf = alloc[UInt8](HEADER_BYTES)
+    var seedbuf = alloc[UInt8](8)
     # Reusable buffers: training uses constant shapes per run, so these
     # allocate once. A shape change reallocates (the old block is
     # reclaimed when the process exits; acceptable for this prototype).
@@ -78,6 +125,7 @@ def main() raises:
         var rank = Int(dims[2])
         var samples = Int(dims[3])
         var alpha = h.unsafe_ptr().unsafe_bitcast[Float32]()[8]
+        var mode = h.unsafe_ptr().unsafe_bitcast[UInt32]()[9]
 
         # shape fingerprint; each dimension < 2^13 keeps this exact
         var shape_key = (((sites * 8192) + species) * 8192 + rank) * 8192 + samples
@@ -101,7 +149,13 @@ def main() raises:
             break
         if not read_exact(sin, y.bitcast[UInt8](), sites * species * 4):
             break
-        if not read_exact(sin, noise.bitcast[UInt8](), samples * sites * rank * 4):
+        if mode == 1:
+            # seed transport: 8-byte seed, server generates the noise
+            if not read_exact(sin, seedbuf, 8):
+                break
+            var seed = Span[UInt8](unsafe_ptr=seedbuf, length=8).unsafe_ptr().unsafe_bitcast[UInt64]()[0]
+            gen_noise(noise, samples * sites * rank, seed)
+        elif not read_exact(sin, noise.bitcast[UInt8](), samples * sites * rank * 4):
             break
 
         comptime N_CHUNKS = 16

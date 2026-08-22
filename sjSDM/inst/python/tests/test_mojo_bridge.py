@@ -61,6 +61,13 @@ def run_worker(mu, sigma, y, noise, alpha):
     return loss, gmu.reshape(sites, species), gsigma.reshape(species, rank)
 
 
+def run_worker_seed(mu, sigma, y, samples, seed):
+    loss, gmu, gsigma = mojo_bridge._WORKER.run_seed(mu, sigma, y, samples, 1.0, seed)
+    sites, species = mu.shape
+    rank = sigma.shape[1]
+    return loss, gmu.reshape(sites, species), gsigma.reshape(species, rank)
+
+
 class TestPersistentProtocol:
     def test_shapes_and_finiteness(self):
         mu, sigma, y, noise = make_case(50, 20, 3, 40)
@@ -154,15 +161,16 @@ class TestWorkerRestart:
 
     def test_autograd_function_restarts_dead_worker(self):
         mu, sigma, y, noise = make_case(30, 10, 3, 20, seed=13)
-        mojo_bridge._MojoLogitMCLoss.apply(mu, sigma, y, noise, 1.0)
+        mojo_bridge._MojoLogitMCLoss.apply(mu, sigma, y, noise.shape[0], 1.0)
         mojo_bridge._WORKER.proc.kill()
         mojo_bridge._WORKER.proc.wait()
-        loss = mojo_bridge._MojoLogitMCLoss.apply(mu, sigma, y, noise, 1.0)
+        loss = mojo_bridge._MojoLogitMCLoss.apply(mu, sigma, y, noise.shape[0], 1.0)
         assert torch.isfinite(loss).all()
 
 
 class TestAutogradIntegration:
     def test_backward_matches_reference_gradients(self):
+        # Explicit-noise transport so kernel and reference see the same draws.
         mu, sigma, y, noise = make_case(40, 15, 3, 30, seed=17)
         mu1 = mu.clone().requires_grad_(True)
         sig1 = sigma.clone().requires_grad_(True)
@@ -181,10 +189,57 @@ class TestAutogradIntegration:
     def test_backward_rejects_nonuniform_grad_output(self):
         mu, sigma, y, noise = make_case(30, 10, 3, 20, seed=19)
         mu1 = mu.clone().requires_grad_(True)
-        loss = mojo_bridge._MojoLogitMCLoss.apply(mu1, sigma, y, noise, 1.0)
+        loss = mojo_bridge._MojoLogitMCLoss.apply(
+            mu1, sigma, y, noise.shape[0], 1.0
+        )
         weights = torch.linspace(0.1, 2.0, loss.shape[0])
         with pytest.raises(RuntimeError, match="uniform grad_output"):
             loss.backward(weights)
+
+
+class TestSeedTransport:
+    def test_same_seed_deterministic(self):
+        mu, sigma, y, _ = make_case(40, 15, 3, 30, seed=41)
+        l1, g1, s1 = run_worker_seed(mu, sigma, y, 30, 12345)
+        l2, g2, s2 = run_worker_seed(mu, sigma, y, 30, 12345)
+        assert np.array_equal(l1, l2) and np.array_equal(g1, g2)
+        assert np.array_equal(s1, s2)
+
+    def test_different_seeds_vary(self):
+        mu, sigma, y, _ = make_case(40, 15, 3, 30, seed=43)
+        l1, _, _ = run_worker_seed(mu, sigma, y, 30, 1)
+        l2, _, _ = run_worker_seed(mu, sigma, y, 30, 2)
+        assert not np.array_equal(l1, l2)
+
+    def test_statistical_agreement_with_torch_noise(self):
+        torch.manual_seed(47)
+        sites, species, rank, samples = 40, 15, 3, 100
+        mu, sigma, y, noise = make_case(sites, species, rank, samples, seed=47)
+        seed_losses, ref_losses = [], []
+        for k in range(15):
+            ls, _, _ = run_worker_seed(mu, sigma, y, samples, 500 + k)
+            seed_losses.append(ls.mean())
+            lr, _, _ = run_worker(mu, sigma, y, noise, 1.0)
+            ref_losses.append(lr.mean())
+        # Same distribution of MC loss estimates (torch noise fixed here,
+        # so compare spread and level loosely).
+        assert abs(np.mean(seed_losses) - np.mean(ref_losses)) < 0.5
+        assert np.std(seed_losses) < 1.0
+
+    def test_mixed_shapes_seed_mode(self):
+        shapes = [(30, 20, 3, 40), (30, 60, 5, 25), (80, 20, 2, 40)]
+        for k, (sites, species, rank, samples) in enumerate(shapes):
+            mu, sigma, y, _ = make_case(sites, species, rank, samples, seed=k)
+            loss, gmu, gsigma = run_worker_seed(mu, sigma, y, samples, k)
+            assert np.isfinite(loss).all()
+            assert np.isfinite(gmu).all() and np.isfinite(gsigma).all()
+            assert gmu.shape == (sites, species)
+            assert gsigma.shape == (species, rank)
+
+    def test_mojologitloss_uses_seed_transport_by_default(self):
+        mu, sigma, y, noise = make_case(30, 10, 3, 20, seed=53)
+        loss = mojo_bridge.mojo_logit_loss(mu, y, sigma, 20, 1.0)
+        assert torch.isfinite(loss).all()
 
 
 class TestGuards:

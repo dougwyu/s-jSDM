@@ -79,24 +79,41 @@ class _PersistentWorker:
             ) from e
 
     def run(self, mu, sigma, y, noise, alpha):
+        """Legacy transport: noise is a float32 tensor shipped through the pipe."""
+        return self._request(mu, sigma, y, noise.shape[0], alpha,
+                             noise_tensor=noise)
+
+    def run_seed(self, mu, sigma, y, samples, alpha, seed):
+        """Seed transport: the server generates the standard normals."""
+        return self._request(mu, sigma, y, samples, alpha, seed=seed)
+
+    def _request(self, mu, sigma, y, samples, alpha, noise_tensor=None, seed=None):
         sites, species = mu.shape
         rank = sigma.shape[1]
-        samples = noise.shape[0]
         if self.proc is None or self.proc.poll() is not None:
             self._start()
         header = struct.pack("<qqqq", sites, species, rank, samples)
         header += struct.pack(
             "<I", struct.unpack("<I", struct.pack("<f", alpha))[0]
         )
-        payload = b"".join(
-            arr.detach().numpy().tobytes() for arr in (mu, sigma, y, noise)
-        )
+        if noise_tensor is not None:
+            header += struct.pack("<I", 0)  # mode 0: noise payload
+            tail = b"".join(
+                arr.detach().numpy().tobytes()
+                for arr in (mu, sigma, y, noise_tensor)
+            )
+        else:
+            header += struct.pack("<I", 1)  # mode 1: server-side RNG
+            tail = b"".join(
+                arr.detach().numpy().tobytes() for arr in (mu, sigma, y)
+            ) + struct.pack("<Q", int(seed))
+        payload = header + tail
         n_out = sites * 4
         n_gmu = sites * species * 4
         n_gsig = species * rank * 4
         total = n_out + n_gmu + n_gsig
 
-        self.proc.stdin.write(header + payload)
+        self.proc.stdin.write(payload)
         self.proc.stdin.flush()
 
         buf = bytearray()
@@ -168,20 +185,42 @@ class _MojoLogitMCLoss(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, mu, sigma, y, noise, alpha):
+    def forward(ctx, mu, sigma, y, sampling, alpha):
+        """sampling is either an int (seed transport unless disabled via
+        SJSDM_MOJO_SEED_TRANSPORT=0) or an explicit noise tensor."""
         batch, species = mu.shape
         rank = sigma.shape[1]
 
         persistent = os.environ.get("SJSDM_MOJO_PERSISTENT", "1") == "1"
-        runner = _WORKER.run if persistent else _run_oneshot
+        explicit_noise = hasattr(sampling, "shape")
+        if explicit_noise:
+            noise = sampling
+            seed_transport = False
+        else:
+            seed_transport = (
+                os.environ.get("SJSDM_MOJO_SEED_TRANSPORT", "1") != "0"
+                and persistent
+            )
+        if seed_transport:
+            # Draw the seed from torch's global RNG so fixed-seed fits
+            # remain reproducible run-to-run.
+            seed = int(torch.randint(0, 2**62, (1,), dtype=torch.int64).item())
+            runner = lambda: _WORKER.run_seed(mu, sigma, y, int(sampling), alpha, seed)
+        else:
+            if not explicit_noise:
+                noise = torch.randn(size=(int(sampling), int(batch), int(rank)),
+                                    device=torch.device("cpu"), dtype=torch.float32)
+            runner = (lambda: _WORKER.run(mu, sigma, y, noise, alpha)
+                      if persistent else
+                      lambda: _run_oneshot(mu, sigma, y, noise, alpha))
         try:
-            out, gmu, gsigma = runner(mu, sigma, y, noise, alpha)
+            out, gmu, gsigma = runner()
         except (RuntimeError, BrokenPipeError, subprocess.CalledProcessError):
             if not persistent:
                 raise
             # Worker died (e.g. after an external signal): restart once.
             _WORKER.close()
-            out, gmu, gsigma = _WORKER.run(mu, sigma, y, noise, alpha)
+            out, gmu, gsigma = runner()
 
         ctx.save_for_backward(
             torch.from_numpy(gmu.reshape(batch, species)),
@@ -204,7 +243,14 @@ class _MojoLogitMCLoss(torch.autograd.Function):
 
 
 def mojo_logit_loss(mu, Ys, sigma, sampling, alpha):
-    """Drop-in replacement for the binary logit/probit MC training loss."""
+    """Drop-in replacement for the binary logit/probit MC training loss.
+
+    By default (SJSDM_MOJO_SEED_TRANSPORT != "0", persistent transport)
+    the noise tensor is never shipped through the pipe; an 8-byte seed
+    drawn from torch's global RNG is sent instead and the worker
+    generates the standard normals itself. Set SJSDM_MOJO_SEED_TRANSPORT=0
+    for the legacy explicit-noise transport.
+    """
     if mu.device.type != "cpu" or mu.dtype != torch.float32:
         raise RuntimeError("Mojo backend requires CPU float32 tensors.")
     if torch.isnan(Ys).any():
@@ -212,8 +258,4 @@ def mojo_logit_loss(mu, Ys, sigma, sampling, alpha):
             "Mojo backend does not support NaN responses; "
             "unset SJSDM_MOJO_BACKEND for this data."
         )
-    batch, species = mu.shape
-    rank = sigma.shape[1]
-    noise = torch.randn(size=(int(sampling), int(batch), int(rank)),
-                        device=torch.device("cpu"), dtype=torch.float32)
-    return _MojoLogitMCLoss.apply(mu, sigma, Ys.contiguous(), noise, float(alpha))
+    return _MojoLogitMCLoss.apply(mu, sigma, Ys.contiguous(), int(sampling), float(alpha))
