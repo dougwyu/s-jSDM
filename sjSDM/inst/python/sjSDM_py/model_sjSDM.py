@@ -906,17 +906,18 @@ class Model_sjSDM:
 
         if train:
             if self.link == "logit" or self.link == "probit":
-                # Opt-in Mojo backend for the binary MC likelihood (CPU only).
+                # Mojo backend for the binary MC likelihood (CPU only).
                 # Not usable here when allow_mojo=False: the Hessian in se()
                 # needs double backprop through the loss.
+                # SJSDM_MOJO_BACKEND: "1" forces it on (error if unavailable),
+                # "0" forces it off; unset/auto enables it whenever the
+                # prebuilt kernel is present and this fit runs on CPU.
                 import os
-                from .mojo_bridge import mojo_logit_loss
-                if allow_mojo and os.environ.get("SJSDM_MOJO_BACKEND", "") == "1":
-                    def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                        return mojo_logit_loss(mu, Ys, sigma, sampling, alpha)
-                    return tmp
+                from .mojo_bridge import mojo_available, mojo_logit_loss
+                mode = os.environ.get("SJSDM_MOJO_BACKEND", "auto").strip().lower()
+
                 #@torch.jit.script
-                def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
+                def torch_tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
                     noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device), dtype=dtype)
                     E = torch.sigmoid(   torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).mul(alpha)   ).mul(0.999999).add(0.0000005)
                     Ys_masked = Ys.clone()
@@ -929,6 +930,32 @@ class Model_sjSDM:
                     Eprob = logprob.sub(maxlogprob).exp().mean(dim = 0)
                     loss = Eprob.log().neg().sub(maxlogprob)
                     return loss
+
+                if allow_mojo and mode != "0":
+                    use_mojo = (
+                        mode == "1" or (self.device.type == "cpu" and mojo_available())
+                    )
+                    if mode == "1" and not mojo_available():
+                        raise RuntimeError(
+                            "SJSDM_MOJO_BACKEND=1 but no prebuilt Mojo kernel "
+                            "found; build mc_grad_server_bin or unset "
+                            "SJSDM_MOJO_BACKEND."
+                        )
+                    if use_mojo:
+                        def mojo_tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
+                            return mojo_logit_loss(mu, Ys, sigma, sampling, alpha)
+                        if mode == "1":
+                            return mojo_tmp
+                        # auto mode: fall back to the torch loss when Y
+                        # contains NaNs (the Mojo kernel rejects them).
+                        def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
+                            if torch.isnan(Ys).any():
+                                return torch_tmp(mu, Ys, sigma, batch_size, sampling, df, alpha, device, dtype)
+                            return mojo_tmp(mu, Ys, sigma, batch_size, sampling, df, alpha, device, dtype)
+                        return tmp
+
+                # keep the generic `return tmp` below valid
+                tmp = torch_tmp
             elif self.link == "linear":
                 #@torch.jit.script
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):

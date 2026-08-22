@@ -242,6 +242,23 @@ class _MojoLogitMCLoss(torch.autograd.Function):
         return gmu * scale, gsigma * scale, None, None, None
 
 
+def mojo_available() -> bool:
+    """True if the Mojo backend can be used on this machine/install.
+
+    Checks for the persistent server binary (or one-shot fallback when
+    SJSDM_MOJO_PERSISTENT=0). Does not check tensor device/dtype; the
+    loss itself rejects non-CPU float32 inputs.
+    """
+    import os
+
+    path = (
+        _oneshot_path()
+        if os.environ.get("SJSDM_MOJO_PERSISTENT", "") == "0"
+        else _server_path()
+    )
+    return os.path.isfile(path)
+
+
 def mojo_logit_loss(mu, Ys, sigma, sampling, alpha):
     """Drop-in replacement for the binary logit/probit MC training loss.
 
