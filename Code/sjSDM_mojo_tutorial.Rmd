@@ -44,7 +44,7 @@ The **Mojo backend** replaces the inner Monte-Carlo likelihood computation (the 
 
 This tutorial covers the **Mojo-accelerated CPU build** of sjSDM, which currently requires **Apple Silicon (macOS, arm64)** and a full clone of the development repository at `dougwyu/s-jSDM`.
 
-> **Not on Apple Silicon, or just want plain sjSDM?** You don't need this tutorial. Install the original, pure-PyTorch sjSDM instead -- it is fully supported on macOS (Intel and Apple Silicon), Windows, and Linux:
+> **Not on Apple Silicon?** You don't need this tutorial. Install the original, pure-PyTorch sjSDM instead -- it is fully supported on macOS (Intel), Windows, and Linux:
 >
 > ```{r fallback, eval=FALSE}
 > remotes::install_github("TheoreticalEcology/s-jSDM/sjSDM")
@@ -52,7 +52,15 @@ This tutorial covers the **Mojo-accelerated CPU build** of sjSDM, which currentl
 > install_sjSDM()   # downloads a self-contained Python environment; no Python skills needed
 > ```
 >
-> Everything from Section 4 onward of this tutorial works identically with that install; just skip Sections 2--3 (Mojo setup and switching).
+> **On Apple Silicon but don't want Mojo?** Stay here anyway. Installing from the upstream repository is currently unreliable on Apple Silicon, whereas this fork contains the compatibility fixes (released as [v0.1.0](https://github.com/dougwyu/s-jSDM/releases/tag/v0.1.0)). Plain PyTorch-mode sjSDM works without any of the pixi/Mojo setup below:
+>
+> ```{r fallback-apple, eval=FALSE}
+> remotes::install_github("dougwyu/s-jSDM/sjSDM", ref = "v0.1.0")
+> library(sjSDM)
+> install_sjSDM()
+> ```
+>
+> Everything from Section 4 onward of this tutorial works identically with either install; just skip Sections 2--3 (Mojo setup and switching).
 
 ## One install path: clone + pixi
 

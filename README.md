@@ -24,9 +24,8 @@ version of sjSDM on an Apple Silicon Mac.** It currently requires:
 - An Apple Silicon Mac (arm64 macOS)
 - A clone of this repository (the Mojo worker binary is built locally)
 
-If you are not in that audience – Intel Macs, Windows, Linux, or anyone
-who just wants plain sjSDM – please use the **original package
-instead**:
+If you are not in that audience – Intel Macs, Windows, or Linux – please
+use the **original package instead**:
 
 ``` r
 remotes::install_github("TheoreticalEcology/s-jSDM/sjSDM")
@@ -34,8 +33,21 @@ library(sjSDM)
 install_sjSDM()
 ```
 
+**On Apple Silicon but don’t want Mojo?** Stay here anyway. Installing
+sjSDM from the upstream repository is currently unreliable on Apple
+Silicon, whereas this fork contains the compatibility fixes (released as
+[v0.1.0](https://github.com/dougwyu/s-jSDM/releases/tag/v0.1.0)). You
+can use plain PyTorch-mode sjSDM from this fork without any of the
+pixi/Mojo setup:
+
+``` r
+remotes::install_github("dougwyu/s-jSDM/sjSDM", ref = "v0.1.0")
+library(sjSDM)
+install_sjSDM()
+```
+
 Everything about fitting and interpreting models is identical between
-the two; only the compute backend differs.
+all of these; only the compute backend differs.
 
 ## What sjSDM does
 
