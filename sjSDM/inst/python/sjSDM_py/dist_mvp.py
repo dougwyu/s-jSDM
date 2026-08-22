@@ -104,7 +104,7 @@ class MultivariateProbit(TorchDistribution):
         
         #print(self.scale.shape)
         
-        noise = torch.randn(size = [self.sampling, value.shape[0], self.df], device=value.device)
+        noise = torch.randn(size = [int(self.sampling), value.shape[0], int(self.df)], device=value.device)
         E = self.link(torch.tensordot(noise, self.scale.t(), dims = 1).add(self.loc).mul(alpha)).mul(one.sub(eps)).add(eps.mul(half))
         logprob = E.log().mul(value).add(one.sub(E).log().mul(one.sub(value))).neg().sum(dim = 2).neg()
         maxlogprob = logprob.max(dim = 0).values
@@ -157,7 +157,7 @@ def MVP_logLik(Y, X, sigma, device, dtype, batch_size=25, alpha = 1.0, sampling=
         y = y.to(device, non_blocking=True)
         pred = pred.to(device, non_blocking=True)
         if noise is None:
-            noise_tmp = torch.randn(size = [sampling, pred.shape[0], sigma.shape[1]], device=torch.device(device), dtype=dtype)
+            noise_tmp = torch.randn(size = [int(sampling), pred.shape[0], sigma.shape[1]], device=torch.device(device), dtype=dtype)
         else:
             noise_tmp = noise[:,indices,:].to(device, non_blocking=True)
         E = link_func( torch.einsum("ijk, lk -> ijl", [noise_tmp, sigma]).add(pred).mul(alpha) ).mul(0.999999).add(0.0000005)

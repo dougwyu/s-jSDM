@@ -721,7 +721,9 @@ class Model_sjSDM:
             List[np.ndarray]: Standard errors for environmental coefficients
         """           
         dataLoader = self._get_DataLoader(X, Y, SP, batch_size=batch_size, shuffle=False)
-        loss_func = self._build_loss_function(train=True)
+        # The Hessian requires double backprop; the Mojo backward is not
+        # differentiable, so always use the PyTorch loss here.
+        loss_func = self._build_loss_function(train=True, allow_mojo=False)
         se = []
         weights_base = np.transpose(self.env_weights[0])
         y_dim = Y.shape[1]
@@ -879,7 +881,7 @@ class Model_sjSDM:
             if l2 > 0.0:
                 self.losses.append( lambda: self.l1_l2[1](self.sigma, l2) )
 
-    def _build_loss_function(self, train: bool = True, raw: bool = False, individual:bool = False, simulate: bool = False) -> Callable:
+    def _build_loss_function(self, train: bool = True, raw: bool = False, individual:bool = False, simulate: bool = False, allow_mojo: bool = True) -> Callable:
         """Build loss (likelihood) function
 
         Args:
@@ -887,6 +889,8 @@ class Model_sjSDM:
             raw (bool, optional): Linear or response scale. Defaults to False.
             individual(bool, optional): Return individual logLL values. Defaults to False.
             simulate(bool, optional): Return simulated values. Defaults to False.
+            allow_mojo (bool, optional): Permit the opt-in Mojo MC loss (single-order
+                gradients only). Must be False where double backprop is needed.
 
         Returns:
             Callable: loss function
@@ -896,15 +900,24 @@ class Model_sjSDM:
             #tmp(mu: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str):
             @torch.jit.script
             def tmp(mu: torch.Tensor,  sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device), dtype=dtype)
+                noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device), dtype=dtype)
                 return torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu)
             return tmp
 
         if train:
             if self.link == "logit" or self.link == "probit":
+                # Opt-in Mojo backend for the binary MC likelihood (CPU only).
+                # Not usable here when allow_mojo=False: the Hessian in se()
+                # needs double backprop through the loss.
+                import os
+                from .mojo_bridge import mojo_logit_loss
+                if allow_mojo and os.environ.get("SJSDM_MOJO_BACKEND", "") == "1":
+                    def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
+                        return mojo_logit_loss(mu, Ys, sigma, sampling, alpha)
+                    return tmp
                 #@torch.jit.script
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device), dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device), dtype=dtype)
                     E = torch.sigmoid(   torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).mul(alpha)   ).mul(0.999999).add(0.0000005)
                     Ys_masked = Ys.clone()
                     Ys_masked.masked_fill_(Ys.isnan(), 0.0)
@@ -919,7 +932,7 @@ class Model_sjSDM:
             elif self.link == "linear":
                 #@torch.jit.script
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device), dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device), dtype=dtype)
                     E = torch.clamp(torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).mul(alpha), 0.0, 1.0).mul(0.999999).add(0.0000005)
                     Ys_masked = Ys.clone()
                     Ys_masked.masked_fill_(Ys.isnan(), 0.0)
@@ -933,7 +946,7 @@ class Model_sjSDM:
                     return loss
             elif self.link == "count":
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device),dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device),dtype=dtype)
                     E = torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).exp()
                     Ys_masked = Ys.clone()
                     Ys_masked.masked_fill_(Ys.isnan(), 0.0)
@@ -943,7 +956,7 @@ class Model_sjSDM:
                     return Eprob.log().neg().sub(maxlogprob)
             elif self.link == "nbinom":
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device),dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device),dtype=dtype)
                     E = torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).exp()
                     Ys_masked = Ys.clone()
                     Ys_masked.masked_fill_(Ys.isnan(), 0.0)
@@ -960,7 +973,7 @@ class Model_sjSDM:
                 #    return torch.distributions.MultivariateNormal(loc=mu, covariance_matrix=sigma.matmul(sigma.t()).add(torch.eye(sigma.shape[0], device=torch.device(device), dtype=dtype))).log_prob(Ys).neg()
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
                     # return torch.distributions.MultivariateNormal(loc=mu, covariance_matrix=sigma.matmul(sigma.t()).add(torch.eye(sigma.shape[0], device=device, dtype=dtype ))).log_prob(Ys).neg()
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device),dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device),dtype=dtype)
                     #noise = torch.distributions.Normal(loc = torch.zeros_like(self.theta), scale = self.theta.exp()).sample([sampling, batch_size]).to(device=torch.device(device),dtype=dtype)
                     E = torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu)#.exp()
                     Ys_masked = Ys.clone()
@@ -1000,7 +1013,7 @@ class Model_sjSDM:
             if self.link == "logit" or self.link == "probit":
                 #@torch.jit.script
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device), dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device), dtype=dtype)
                     E = torch.sigmoid(   torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).mul(alpha)   ).mul(0.999999).add(0.0000005)
                     logprob = E.log().mul(Ys).add((1.0 - E).log().mul(1.0 - Ys)).neg()#.sum(dim = 2).neg()
                     logprob = logprob.sum(dim = 2).neg()
@@ -1010,7 +1023,7 @@ class Model_sjSDM:
             elif self.link == "linear":
                 #@torch.jit.script
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device), dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device), dtype=dtype)
                     E = torch.clamp(torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).mul(alpha), 0.0, 1.0).mul(0.999999).add(0.0000005)
                     logprob = E.log().mul(Ys).add((1.0 - E).log().mul(1.0 - Ys)).neg() #.sum(dim = 2).neg()
                     logprob = logprob.sum(dim = 2).neg()
@@ -1019,7 +1032,7 @@ class Model_sjSDM:
                     return Eprob.log().neg().sub(maxlogprob).reshape([batch_size, 1])
             elif self.link == "count":
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device),dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device),dtype=dtype)
                     E = torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).exp()
                     logprob = torch.distributions.Poisson(rate=E).log_prob(Ys)#.sum(2)
                     logprob = logprob.sum(dim = 2)# .neg()
@@ -1028,7 +1041,7 @@ class Model_sjSDM:
                     return Eprob.log().neg().sub(maxlogprob).reshape([batch_size, 1])
             elif self.link == "nbinom":
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device),dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device),dtype=dtype)
                     E = torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu).exp()
                     eps = 0.0001
                     theta = 1.0/(torch.nn.functional.softplus(self.theta)+eps)
@@ -1041,7 +1054,7 @@ class Model_sjSDM:
             elif self.link == "normal":
                 def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
                     # return torch.distributions.MultivariateNormal(loc=mu, covariance_matrix=sigma.matmul(sigma.t()).add(torch.eye(sigma.shape[0], device=device, dtype=dtype ))).log_prob(Ys).neg()
-                    noise = torch.randn(size = [sampling, batch_size, df], device=torch.device(device),dtype=dtype)
+                    noise = torch.randn(size = [int(sampling), int(batch_size), int(df)], device=torch.device(device),dtype=dtype)
                     #noise = torch.distributions.Normal(loc = torch.zeros_like(self.theta), scale = self.theta.exp()).sample([sampling, batch_size]).to(device=torch.device(device),dtype=dtype)
                     E = torch.einsum("ijk, lk -> ijl", [noise, sigma]).add(mu)#.exp()
                     logprob = torch.distributions.Normal(E, self.theta.exp()).log_prob(Ys)#.sum(2)
