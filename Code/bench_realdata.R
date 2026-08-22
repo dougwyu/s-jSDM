@@ -1,14 +1,20 @@
 # End-to-end backend benchmark: simulate a community of given size, fit
 # sjSDM under the selected backend, save per-epoch history and timing.
 #
-# Usage: Rscript Code/bench_realdata.R <torch|mojo> <sites> <species> <epochs> <seed> <out.rds>
+# Usage: Rscript Code/bench_realdata.R <torch|mojo|auto> <sites> <species> <epochs> <seed> <out.rds>
 
 args <- commandArgs(trailingOnly = TRUE)
 backend <- args[1]; sites <- as.integer(args[2]); species <- as.integer(args[3])
 epochs <- as.integer(args[4]); seed <- as.integer(args[5]); outfile <- args[6]
 
 Sys.setenv(RETICULATE_PYTHON = here::here("work/port-feasibility/.pixi/envs/default/bin/python"))
-if (backend == "mojo") Sys.setenv(SJSDM_MOJO_BACKEND = "1") else Sys.unsetenv("SJSDM_MOJO_BACKEND")
+if (backend == "mojo") {
+  Sys.setenv(SJSDM_MOJO_BACKEND = "1")
+} else if (backend == "torch") {
+  Sys.setenv(SJSDM_MOJO_BACKEND = "0")
+} else {
+  Sys.unsetenv("SJSDM_MOJO_BACKEND") # auto: Mojo when kernel present
+}
 
 devtools::load_all(here::here("sjSDM"), quiet = TRUE)
 options(sjSDM.device = "cpu")
