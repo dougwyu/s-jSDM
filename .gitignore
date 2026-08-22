@@ -43,3 +43,6 @@ work/mojo-backend/mc_grad_bin
 work/mojo-backend/mc_grad_server_bin
 __pycache__/
 Code/plots/
+
+# pixi lockfile intentionally kept local; see AGENTS.md
+work/mojo-backend/pixi.lock
