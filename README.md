@@ -12,7 +12,7 @@ v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org
 
 This is a fork of [TheoreticalEcology/s-jSDM](https://github.com/TheoreticalEcology/s-jSDM)
 that replaces the inner Monte Carlo likelihood computation of sjSDM with a
-hand-written **Mojo/MAX kernel**, giving roughly **1.3--3x faster model fits
+**Mojo/MAX kernel**, giving roughly **1.3--3x faster model fits
 on Apple Silicon (M-series) CPUs** while producing statistically equivalent
 results.
 
