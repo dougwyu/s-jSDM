@@ -183,6 +183,10 @@ The narrow autograd bridge is implemented:
 
 Keep optimizers, predictor layers, prediction, and `se()`/Hessian functionality in PyTorch initially.
 
+## Mojo/MAX upgrade policy
+
+The toolchain is pinned in `work/mojo-backend/pixi.toml` and upgrades are deliberate events, never automatic. Procedure (detailed in `Code/README.md`, "Maintaining the Mojo/MAX pin"): bump the pin, `pixi install`, rebuild the server with `pixi run mojo build -O 3`, run the Python bridge pytest suite plus `mojo/parity_check.py`, then re-run the shape-grid benchmark and one end-to-end R-level benchmark before merging; revert the pin on any parity or performance regression. Keep the kernels on a minimal Mojo API surface (SIMD loads/stores, `max.algorithm.parallelize`, pipe I/O) to limit per-upgrade review scope.
+
 Relevant commits after the release include `5d9f66f` (parallel forward kernel), `ad6d66f` (gradient kernel), and `2f44f94` (ignore Mojo build/temp artifacts). Build artifacts such as `mc_loss_bin` and `mojo/tmp/` are ignored.
 
 ## Generated and local artifacts

@@ -47,6 +47,33 @@ install_sjSDM()
 Everything about fitting and interpreting models is identical between all
 of these; only the compute backend differs.
 
+## Why Mojo? The tradeoff
+
+The Monte Carlo likelihood kernel is being moved from PyTorch to
+[Mojo/MAX](https://www.modular.com/mojo) incrementally, and that choice
+involves a real tradeoff:
+
+**The long-term upside is hardware portability.** Mojo/MAX compiles the same
+kernel source to native code for multiple chip architectures -- CPU SIMD
+across vendors today, with NVIDIA and other accelerators as explicit MAX
+targets going forward. A hand-written CUDA or Metal kernel locks you into one
+vendor; a Mojo kernel is intended to follow new hardware without a rewrite.
+
+**The short-term cost is maturity.** Mojo and MAX are young and changing
+quickly compared to PyTorch: the language and APIs evolve between releases,
+the ecosystem of libraries, debuggers, and community knowledge is much
+smaller, and this repository therefore pins and validates against specific
+versions rather than tracking latest. Bugs and performance cliffs are more
+likely to come from the toolchain than from our code.
+
+**In the meantime, the speedup pays for itself on Apple Silicon CPUs:**
+roughly 1.3--3x faster end-to-end fits than the PyTorch CPU path, depending
+on problem size. To contain the maturity risk, only the inner Monte Carlo
+loop is ported; optimizers, predictor layers, prediction, and standard
+errors/Hessians remain in PyTorch, so the R API and statistical behavior are
+unchanged and falling back to pure PyTorch is always one environment
+variable away (`SJSDM_MOJO_BACKEND = "0"`).
+
 ## What sjSDM does
 
 sjSDM is an R package for estimating joint species distribution models
@@ -174,8 +201,11 @@ beyond tolerance. Reference result from the current build:
   covariates under either backend.
 - The Mojo backend is CPU-only. GPU users can still set
   `options(sjSDM.device = "mps")`, which routes fits through PyTorch MPS.
-- Releases: [v0.2.0 "Mojo CPU acceleration"](https://github.com/dougwyu/s-jSDM/releases/tag/v0.2.0)
-  is the first tagged release of the fork.
+- Releases: [v0.1.0 "Apple Silicon support"](https://github.com/dougwyu/s-jSDM/releases/tag/v0.1.0)
+  contains only the PyTorch compatibility fixes -- convenient if you want
+  plain PyTorch-mode sjSDM on Apple Silicon without the pixi/Mojo setup.
+  [v0.2.0 "Mojo CPU acceleration"](https://github.com/dougwyu/s-jSDM/releases/tag/v0.2.0)
+  adds the Mojo backend and is the current release of the fork.
 
 ## License
 

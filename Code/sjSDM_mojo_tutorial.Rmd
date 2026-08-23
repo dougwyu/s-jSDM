@@ -7,7 +7,6 @@ output:
     toc: true
     toc_depth: 2
     number_sections: true
----> **Why not `library(sjSDM)`?** If you install this fork as a regular package, the installed copy looks for the Mojo worker *inside your R library*, won't find it, and silently falls back to PyTorch -- no error, just no acceleration. Just use `devtools::load_all()` on the checkout as shown above.
 ---
 
 ```{r setup, include=FALSE}
@@ -178,8 +177,8 @@ Y <- matrix(rbinom(n_sites * n_species, 1, plogis(logit_p + Z)),
 Alternatively, use sjSDM's own simulator (returns a list with `env`, `species`, `response`, and truth):
 
 ```{r simulate-SDM, eval=FALSE}
-sim <- simulate_SDM(n_sites = 500, n_species = 20, correlation = TRUE)
-str(sim)
+sim <- simulate_SDM(sites = 500, species = 20, correlation = TRUE)
+str(sim)   # list with env, species, response, and simulation truth
 ```
 
 Or analyze one of the bundled empirical datasets (e.g. `butterflies`, `eucalypts` -- presence/absence matrices shipped with the package).
@@ -483,4 +482,5 @@ Expect the Mojo run to finish faster (more so at larger `n_sites` / `n_species` 
 - Package docs: `?sjSDM`, `?bioticStruct`, `?linear`, `?sjSDMControl`, `?sjSDM_cv`.
 - Benchmarks and parity checks: `Code/benchmarks/`, `Code/bench_realdata.R`, `Code/bench_real_occurrence.R`.
 - Mojo kernel sources and validation harness: `work/mojo-backend/mojo/` and `Feasibility_study.md`.
+- Upgrading Mojo/MAX versions: see the "Maintaining the Mojo/MAX pin" section of [Code/README.md](README.md).
 - Original sjSDM paper: Pichler & Hartig (2021), *A new method for faster and more accurate joint species distribution modelling* (Methods in Ecology & Evolution).
