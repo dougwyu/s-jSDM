@@ -74,6 +74,24 @@ errors/Hessians remain in PyTorch, so the R API and statistical behavior are
 unchanged and falling back to pure PyTorch is always one environment
 variable away (`SJSDM_MOJO_BACKEND = "0"`).
 
+**Why CPU only?** The Mojo kernel targets Apple Silicon CPUs, not the GPU
+(MPS). Three reasons:
+
+1. **MAX does not yet expose Apple GPUs.** MAX's accelerator support today
+   centers on NVIDIA GPUs; there is no stable path to compile this kernel
+   for Apple's GPU via MAX. A native Metal port would be a separate,
+   vendor-locked effort -- exactly what using Mojo is meant to avoid.
+2. **The CPU already beats MPS.** Benchmarks in this repository show
+   PyTorch-on-MPS reaching only ~1.5--1.7x over the PyTorch CPU path on
+   large workloads (and losing on small ones), while the Mojo CPU kernel is
+   ~1.3--3x end-to-end -- and it avoids MPS's tendency to materialize very
+   large `sampling x sites x species` intermediate tensors.
+3. **Scope discipline.** Each backend must pass parity tests and benchmarks
+   before it ships; validating one target at a time keeps that feasible.
+
+If MAX gains Apple GPU support, the same kernel source should be portable to
+it -- which is precisely the hardware-portability argument above.
+
 ## What sjSDM does
 
 sjSDM is an R package for estimating joint species distribution models
