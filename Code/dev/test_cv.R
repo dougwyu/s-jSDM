@@ -1,4 +1,4 @@
-Sys.setenv(RETICULATE_PYTHON = "/Users/douglasyu/src/s-jSDM/work/mojo-backend/.pixi/envs/default/bin/python")
+Sys.setenv(RETICULATE_PYTHON = "/Users/douglasyu/src/s-jSDM/work/mojo-backend/reticulate-venv/bin/python")
 devtools::load_all("/Users/douglasyu/src/s-jSDM/sjSDM", quiet = TRUE)
 
 cat("python dir:", system.file("python", package = "sjSDM"), "\n")

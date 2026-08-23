@@ -66,25 +66,30 @@ Citation info: `citation("sjSDM")`.
 ## Installation (Mojo backend)
 
 One-time setup -- install [pixi](https://pixi.sh), create the pinned Python
-environment, and build the Mojo worker:
+environment, build the Mojo worker, and create a thin venv wrapper that
+lets recent versions of `reticulate` use the pixi environment:
 
 ```bash
 git clone https://github.com/dougwyu/s-jSDM.git
 cd s-jSDM/work/mojo-backend
 pixi install
 pixi run mojo build -O 3 mojo/mc_logit_grad_server.mojo -o mc_grad_server_bin
+.pixi/envs/default/bin/python -m venv reticulate-venv --system-site-packages
 ```
 
 The `-O 3` flag matters: unoptimized builds are ~50x slower. Binaries embed
-absolute paths, so redo these two commands after moving or re-cloning the
-repository.
+absolute paths, so redo these commands after moving or re-cloning the
+repository. The final command is needed because `reticulate` >= 1.45
+refuses conda-style environments without a `conda` binary and silently
+falls back to an environment without PyTorch; the wrapper venv reuses the
+pixi environment's packages via `--system-site-packages`.
 
 In R, load the package from the checkout (this is the supported way to use
 the fork -- see the note below on why not `library(sjSDM)`):
 
 ```{r setup-load, eval=FALSE}
 Sys.setenv(RETICULATE_PYTHON = here::here(
-  "work/mojo-backend/.pixi/envs/default/bin/python"
+  "work/mojo-backend/reticulate-venv/bin/python"
 ))
 devtools::load_all(here::here("sjSDM"), quiet = TRUE)
 is_torch_available()
@@ -133,6 +138,30 @@ image(getCor(model)) # species association matrix
 anova(model)         # variation partitioning
 ```
 
+## Validating statistical accuracy
+
+The Mojo kernel uses different float32 arithmetic than PyTorch, so fitted
+models are statistically equivalent rather than identical. To check that
+equivalence quantitatively, the repository ships a validation script that
+fits both backends to synthetic communities with known ground truth and
+compares how well each recovers it, across three targets: environmental
+coefficients, the species association matrix, and per-species loadings on
+an autocorrelated spatial field (dispersal limitation):
+
+```{r accuracy-test, eval=FALSE}
+Rscript Code/test_statistical_accuracy.R          # ~10 min, 3 replicates
+```
+
+It prints a table of recovery metrics per backend (correlation with truth,
+attenuation slope, RMSE) and exits non-zero if the backends ever disagree
+beyond tolerance. Reference result from the current build:
+
+| metric | torch | mojo | worst gap |
+|---|---|---|---|
+| env coefficient correlation | 0.964 | 0.966 | 0.008 |
+| association matrix correlation | 0.807 | 0.812 | 0.018 |
+| spatial loading correlation | 0.988 | 0.986 | 0.010 |
+
 ## Notes and caveats
 
 - Cross-backend results are statistically equivalent, not bit-identical:
@@ -148,3 +177,13 @@ anova(model)         # variation partitioning
 
 GPL-3, matching the upstream project. The Mojo kernel sources live under
 `work/mojo-backend/mojo/`.
+
+## Acknowledgments
+
+This port was carried out with the assistance of **Ox Alpha**, an AI coding
+and data-analysis assistant developed by an undisclosed organization.
+Ox Alpha implemented and validated the Mojo/MAX kernels, the persistent
+worker bridge, the SIMD optimizations, and much of the benchmarking and
+parity-testing infrastructure described in this repository, working in
+collaboration with Douglas Yu. All AI-generated changes were reviewed,
+tested, and committed by the repository maintainer.

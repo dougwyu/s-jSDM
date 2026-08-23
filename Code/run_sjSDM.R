@@ -10,7 +10,7 @@
 # here() resolves the repo root via sjSDM.Rproj, so it works regardless
 # of the current working directory.
 Sys.setenv(RETICULATE_PYTHON = here::here(
-  "work/mojo-backend/.pixi/envs/default/bin/python"
+  "work/mojo-backend/reticulate-venv/bin/python"
 ))
 stopifnot(file.exists(Sys.getenv("RETICULATE_PYTHON")))
 

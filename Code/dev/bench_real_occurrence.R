@@ -6,7 +6,7 @@ args <- commandArgs(trailingOnly = TRUE)
 backend <- args[1]; ds <- args[2]
 epochs <- as.integer(args[3]); seed <- as.integer(args[4]); outfile <- args[5]
 
-Sys.setenv(RETICULATE_PYTHON = here::here("work/mojo-backend/.pixi/envs/default/bin/python"))
+Sys.setenv(RETICULATE_PYTHON = here::here("work/mojo-backend/reticulate-venv/bin/python"))
 if (backend == "mojo") {
   Sys.setenv(SJSDM_MOJO_BACKEND = "1")
 } else if (backend == "torch") {

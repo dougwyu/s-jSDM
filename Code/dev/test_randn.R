@@ -1,4 +1,4 @@
-Sys.setenv(RETICULATE_PYTHON = "/Users/douglasyu/src/s-jSDM/work/mojo-backend/.pixi/envs/default/bin/python")
+Sys.setenv(RETICULATE_PYTHON = "/Users/douglasyu/src/s-jSDM/work/mojo-backend/reticulate-venv/bin/python")
 reticulate::py_run_string("
 import torch, sys
 print('torch', torch.__version__, 'from', torch.__file__)

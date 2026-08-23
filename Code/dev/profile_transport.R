@@ -10,7 +10,7 @@ args <- commandArgs(trailingOnly = TRUE)
 backend <- args[1]; sites <- as.integer(args[2])
 species <- as.integer(args[3]); epochs <- as.integer(args[4]); tag <- args[5]
 
-Sys.setenv(RETICULATE_PYTHON = here::here("work/mojo-backend/.pixi/envs/default/bin/python"))
+Sys.setenv(RETICULATE_PYTHON = here::here("work/mojo-backend/reticulate-venv/bin/python"))
 if (backend == "mojo") Sys.setenv(SJSDM_MOJO_BACKEND = "1") else Sys.unsetenv("SJSDM_MOJO_BACKEND")
 
 devtools::load_all(here::here("sjSDM"), quiet = TRUE)

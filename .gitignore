@@ -46,3 +46,4 @@ Code/plots/
 
 # pixi lockfile intentionally kept local; see AGENTS.md
 work/mojo-backend/pixi.lock
+work/mojo-backend/reticulate-venv/

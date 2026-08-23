@@ -27,11 +27,18 @@ work/mojo-backend/.pixi/envs/default/bin/python
 
 The validated environment currently contains Mojo 1.0.0, MAX 26.5.0, PyTorch 2.5.1, and the sjSDM Python test dependencies. PyTorch reports Apple MPS built and available on the target Mac.
 
-In R, set `RETICULATE_PYTHON` before importing sjSDM or any Python-dependent package:
+**reticulate >= 1.45 note:** newer reticulate refuses conda-style (pixi) prefixes when no `conda` binary exists and silently falls back to an ephemeral uv environment without torch, so plain `Rscript` runs fail with "PyTorch not installed". The workaround is a thin venv wrapper over the pixi env (already created locally):
+
+```bash
+work/mojo-backend/.pixi/envs/default/bin/python -m venv \
+  work/mojo-backend/reticulate-venv --system-site-packages
+```
+
+In R, set `RETICULATE_PYTHON` to this venv before importing sjSDM or any Python-dependent package:
 
 ```r
 Sys.setenv(RETICULATE_PYTHON = here::here(
-  "work/mojo-backend/.pixi/envs/default/bin/python"
+  "work/mojo-backend/reticulate-venv/bin/python"
 ))
 ```
 
@@ -40,6 +47,15 @@ For repository development, load the package with:
 ```r
 devtools::load_all(here::here("sjSDM"), quiet = TRUE)
 ```
+
+**Backend switching gotcha:** `Sys.setenv(SJSDM_MOJO_BACKEND = ...)` in R is
+NOT visible to Python's `os.environ` inside reticulate (the environment is
+snapshotted when the interpreter starts), so switching backends mid-session
+silently does nothing. Use
+`reticulate::py_run_string("import os; os.environ['SJSDM_MOJO_BACKEND'] = '0'")`
+instead, or use separate R processes per backend. Setting the variable via
+`Sys.setenv()` *before* `load_all()`/reticulate starts is fine (verified);
+the committed benchmark scripts all use that safe pattern.
 
 Do not assume that an installed copy of the package reflects repository edits. A fresh R session is often needed after modifying embedded Python modules because reticulate and TorchScript cache imported modules.
 

@@ -4,7 +4,7 @@
 args <- commandArgs(trailingOnly = TRUE)
 backend <- args[1]; logfile <- args[2]
 
-Sys.setenv(RETICULATE_PYTHON = here::here("work/mojo-backend/.pixi/envs/default/bin/python"))
+Sys.setenv(RETICULATE_PYTHON = here::here("work/mojo-backend/reticulate-venv/bin/python"))
 if (backend == "mojo") Sys.setenv(SJSDM_MOJO_BACKEND = "1") else Sys.unsetenv("SJSDM_MOJO_BACKEND")
 
 devtools::load_all(here::here("sjSDM"), quiet = TRUE)
