@@ -201,7 +201,7 @@ anova.sjSDM = function(object, samples = 5000L, verbose = TRUE, ...) {
                        "Full"=-(full_m), "Saturated"= -(SAT_m), "Null"=-null_m)
     
     anova_rows = c("Null", "F_A", "F_B", "F_S", "Full")
-    names(anova_rows) = c("Null", "Abiotic", "Assocations", "Spatial", "Full")
+    names(anova_rows) = c("Null", "Abiotic", "Associations", "Spatial", "Full")
   }
   results = 
     lapply(list(results_discard, results_proportional, results_equal, results_mvp, results_mvp_proportional), function(res) {
@@ -256,7 +256,7 @@ anova.sjSDM = function(object, samples = 5000L, verbose = TRUE, ...) {
     rownames(printFull) = c("Abiotic", "Associations","Spatial", "Shared Abiotic+Associations", "Shared Abiotic+Spatial", "Shared Spatial+Associations", "Shared Abiotic+Associations+Spatial", "Full")
     
     anova_rows = c("Null", "F_A", "F_B", "F_S", "Full")
-    names(anova_rows) = c("Null", "Abiotic", "Assocations", "Spatial", "Full")
+    names(anova_rows) = c("Null", "Abiotic", "Associations", "Spatial", "Full")
     
     toPrint = list(all = printFull)
     toPrint$discard = calculateResults(results[[1]], anova_rows)
@@ -264,16 +264,16 @@ anova.sjSDM = function(object, samples = 5000L, verbose = TRUE, ...) {
     toPrint$equal = calculateResults(results[[3]], anova_rows)
     
     anova_rows = c("Null", "F_A", "F_B", "F_S","F_AS", "Full")
-    names(anova_rows) = c("Null", "Abiotic", "Assocations", "Spatial", "Shared Abiotic+Spatial", "Full")   
+    names(anova_rows) = c("Null", "Abiotic", "Associations", "Spatial", "Shared Abiotic+Spatial", "Full")   
     toPrint$mvp = calculateResults(results[[4]], anova_rows)
     anova_rows = c("Null", "F_A", "F_B", "F_S","Full")
-    names(anova_rows) = c("Null", "Abiotic", "Assocations", "Spatial", "Full")   
+    names(anova_rows) = c("Null", "Abiotic", "Associations", "Spatial", "Full")   
     toPrint$mvp_proportional = calculateResults(results[[5]], anova_rows)
     
   } else {
     
     anova_rows = c("Null", "F_A", "F_B", "Full")
-    names(anova_rows) = c("Null", "Abiotic", "Assocations", "Full")
+    names(anova_rows) = c("Null", "Abiotic", "Associations", "Full")
     
     printFull = results[[1]][1:4,c(1, 4, 3,5,6)]
     rownames(printFull) = printFull$models

@@ -49,6 +49,7 @@ This tutorial covers the **Mojo-accelerated CPU build** of sjSDM, which currentl
 > remotes::install_github("TheoreticalEcology/s-jSDM/sjSDM")
 > library(sjSDM)
 > install_sjSDM()   # downloads a self-contained Python environment; no Python skills needed
+> install_diagnostic()   # use this detailed report if something is off
 > ```
 >
 > **On Apple Silicon but don't want Mojo?** Stay here anyway. Installing from the upstream repository is currently unreliable on Apple Silicon, whereas this fork contains the compatibility fixes (released as [v0.1.0](https://github.com/dougwyu/s-jSDM/releases/tag/v0.1.0)). Plain PyTorch-mode sjSDM works without any of the pixi/Mojo setup below:
@@ -57,11 +58,14 @@ This tutorial covers the **Mojo-accelerated CPU build** of sjSDM, which currentl
 > remotes::install_github("dougwyu/s-jSDM/sjSDM", ref = "v0.1.0")
 > library(sjSDM)
 > install_sjSDM()
+> install_diagnostic()   # use this detailed report if something is off
 > ```
 >
 > Everything from Section 4 onward of this tutorial works identically with either install; just skip Sections 2--3 (Mojo setup and switching).
 
 ## One install path: clone + pixi
+
+**If everything is already installed, jump to Step 4.**
 
 The Mojo backend lives alongside a pinned Python environment (PyTorch 2.5.1) defined with [pixi](https://pixi.sh), a single-binary package manager. You will install pixi once, let it build the environment, and compile the Mojo worker binary. No Python knowledge is needed at any step.
 
@@ -89,6 +93,8 @@ pixi run mojo build -O 3 mojo/mc_logit_grad_server.mojo -o mc_grad_server_bin
 
 The `-O 3` flag matters: unoptimized Mojo builds are roughly 50x slower. When finished, `work/mojo-backend/mc_grad_server_bin` exists -- that is the accelerated likelihood kernel sjSDM will find and use automatically.
 
+**Jump here if everything is already installed**
+
 **Step 4 -- point R at the environment and load the package.** Do this at the start of every R session:
 
 ```{r reticulate}
@@ -102,7 +108,7 @@ stopifnot(file.exists(Sys.getenv("RETICULATE_PYTHON")))
 devtools::load_all(here::here("sjSDM"), quiet = TRUE)
 
 is_torch_available()
-install_diagnostic()   # detailed report if something is off
+reticulate::py_config() # use this diagnostic with the pixi setup
 ```
 
 > **Why not `library(sjSDM)`?** If you install this fork as a regular package, the installed copy looks for the Mojo worker *inside your R library*, won't find it, and silently falls back to PyTorch -- no error, just no acceleration. Just use `devtools::load_all()` on the checkout as shown above.
@@ -193,7 +199,7 @@ fit <- sjSDM(
   env = linear(data = X, formula = ~ temp + precip + elev),
   biotic = bioticStruct(df = 5),                # rank-5 covariance factor
   iter = 100,                                   # gradient steps
-  sampling = 100,                               # MC samples per step
+  sampling = 1000,                               # MC samples per step
   verbose = FALSE
 )
 
@@ -391,15 +397,16 @@ Use `sjSDM_cv()` to tune regularization strength. Two things people trip on:
 - The tuning argument is `tune_steps`, not `IT`.
 
 ```{r cv}
+options(sjSDM.dev = here::here("sjSDM"))
+
 cv <- sjSDM_cv(
-  Y = Y,
-  env = linear(data = X),
+  Y = Y, env = linear(data = X),
   biotic = bioticStruct(df = 5),
-  tune = "random", tune_steps = 5,   # random search over penalty grid
-  CV = 3,                            # 3-fold cross-validation
-  iter = 100, sampling = 100,
-  n_cores = 2                        # parallel folds
+  tune = "random", tune_steps = 5,
+  CV = 3, iter = 100, sampling = 100,
+  n_cores = 2
 )
+
 plot(cv)                            # CV curves over lambda
 ```
 

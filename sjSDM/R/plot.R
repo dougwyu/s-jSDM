@@ -96,7 +96,7 @@ plotsjSDMcoef = function(object,wrap_col=NULL,group=NULL,col=NULL,slist=NULL) {
         ylab("coefficients") + 
         labs(fill="Group") + 
         coord_flip(expand=FALSE) + 
-        geom_hline(aes(yintercept = 0),linetype="dashed",size=1) +
+        geom_hline(aes(yintercept = 0),linetype="dashed",linewidth=1) +
         theme_classic()+ facet_wrap(~coef, ncol = wrap_col)+ 
         geom_text(aes(y= miny-0.1, label =as.factor(star)), position = position_dodge(0.3), size = 2.5, fontface = "bold")+
         geom_errorbar(aes(ymax = Estimate + Std.Err, ymin = Estimate - Std.Err), width = 0.3)+ scale_y_continuous(limits = c(miny-0.3,maxy+0.1))
