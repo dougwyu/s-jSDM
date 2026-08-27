@@ -1,5 +1,5 @@
 ---
-title: "sjSDM from R: a complete tutorial, including the Mojo CPU accelerator"
+title: "sjSDM from R: tutorial and Mojo CPU setup"
 author: "sjSDM developers"
 date: "`r Sys.Date()`"
 output:
@@ -16,14 +16,12 @@ knitr::opts_chunk$set(
 )
 ```
 
-This tutorial covers:
+This tutorial has two parts:
 
-1.  What joint species distribution models (jSDMs) are and what **sjSDM** does.
-2.  Installing the Mojo-accelerated build -- *no Python knowledge required*.
-3.  Every major feature: fitting, species associations, prediction, $R^2$, variation partitioning (ANOVA), cross-validation, spatial models, standard errors, plots, and simulation.
-4.  The **Mojo CPU backend**: what it is and how to control it with one environment variable.
+1.  Install and select either the standard PyTorch backend or the optional Mojo CPU backend.
+2.  Work through the main sjSDM workflow: simulation, fitting, species associations, prediction, $R^2$, variation partitioning, cross-validation, spatial models, standard errors, and plotting.
 
-Chunks are set to `eval = FALSE` so the document renders instantly; run them interactively top-to-bottom instead (total runtime of the full walkthrough is a few minutes on a laptop).
+Code chunks are not run while this document is rendered. Run them interactively, in order. The basic fit is quick; cross-validation, ANOVA refits, and standard errors take longer.
 
 # Background: what is sjSDM?
 
@@ -35,7 +33,7 @@ sjSDM implements scalable jSDMs using deep-learning machinery (PyTorch):
 - Environmental (and optionally spatial) predictor layers via `linear()` formulas, plus optional deep neural network layers via `DNN()`.
 - Fast minibatch-gradient-descent fitting that scales to tens of thousands of sites.
 
-The **Mojo backend** replaces the inner Monte-Carlo likelihood computation (the hot loop) with a hand-written kernel in the Mojo language, compiled to native Apple Silicon code. On typical workloads it is roughly 1.3--3x faster than PyTorch on CPU while producing statistically equivalent results.
+The optional **Mojo backend** replaces the inner Monte Carlo likelihood computation (the hot loop) with a hand-written kernel compiled to native Apple Silicon code. Predictor layers, optimizers, prediction, and Hessian-based standard errors remain in PyTorch.
 
 # Installation
 
@@ -46,18 +44,20 @@ This tutorial covers the **Mojo-accelerated CPU build** of sjSDM, which currentl
 > **Not on Apple Silicon?** You don't need this tutorial. Install the original, pure-PyTorch sjSDM instead -- it is fully supported on macOS (Intel), Windows, and Linux:
 >
 > ```{r fallback, eval=FALSE}
+> install.packages("remotes")
 > remotes::install_github("TheoreticalEcology/s-jSDM/sjSDM")
 > library(sjSDM)
-> install_sjSDM()   # downloads a self-contained Python environment; no Python skills needed
+> install_sjSDM(version = "cpu")
 > install_diagnostic()   # use this detailed report if something is off
 > ```
 >
 > **On Apple Silicon but don't want Mojo?** Stay here anyway. Installing from the upstream repository is currently unreliable on Apple Silicon, whereas this fork contains the compatibility fixes (released as [v0.1.0](https://github.com/dougwyu/s-jSDM/releases/tag/v0.1.0)). Plain PyTorch-mode sjSDM works without any of the pixi/Mojo setup below:
 >
 > ```{r fallback-apple, eval=FALSE}
+> install.packages("remotes")
 > remotes::install_github("dougwyu/s-jSDM/sjSDM", ref = "v0.1.0")
 > library(sjSDM)
-> install_sjSDM()
+> install_sjSDM(version = "cpu")
 > install_diagnostic()   # use this detailed report if something is off
 > ```
 >
@@ -67,7 +67,7 @@ This tutorial covers the **Mojo-accelerated CPU build** of sjSDM, which currentl
 
 **If everything is already installed, jump to Step 4.**
 
-The Mojo backend lives alongside a pinned Python environment (PyTorch 2.5.1) defined with [pixi](https://pixi.sh), a single-binary package manager. You will install pixi once, let it build the environment, and compile the Mojo worker binary. No Python knowledge is needed at any step.
+The Mojo backend lives alongside a project-local Python environment defined with [pixi](https://pixi.sh), a single-binary package manager. PyTorch 2.5.1, Mojo 1.0.0, and MAX 26.5.0 are the versions validated for v0.2.0. The ranges in `pixi.toml` are not an immutable lock, so commit a tested `pixi.lock` before relying on byte-for-byte reproducible installs.
 
 **Step 1 -- clone the repository:**
 
@@ -83,24 +83,37 @@ cd s-jSDM
 curl -fsSL https://pixi.sh/install.sh | sh
 ```
 
-**Step 3 -- create the pinned Python environment and build the Mojo worker.** From the repository root:
+**Step 3 -- create the Python environment, build the Mojo worker, and create the reticulate wrapper.** From the repository root:
 
 ```{bash build, eval=FALSE}
 cd work/mojo-backend
 pixi install
 pixi run mojo build -O 3 mojo/mc_logit_grad_server.mojo -o mc_grad_server_bin
+.pixi/envs/default/bin/python -m venv reticulate-venv --system-site-packages
 ```
 
-The `-O 3` flag matters: unoptimized Mojo builds are roughly 50x slower. When finished, `work/mojo-backend/mc_grad_server_bin` exists -- that is the accelerated likelihood kernel sjSDM will find and use automatically.
+The `-O 3` flag matters: unoptimized Mojo builds are roughly 50x slower. The thin `reticulate-venv` wrapper is also required: recent reticulate versions do not treat a pixi prefix without a `conda` executable as a usable Conda environment. When this step finishes, both of these paths should exist:
+
+```{bash verify-build, eval=FALSE}
+test -x mc_grad_server_bin
+test -x reticulate-venv/bin/python
+```
 
 **Jump here if everything is already installed**
 
-**Step 4 -- point R at the environment and load the package.** Do this at the start of every R session:
+**Step 4 -- install the R-side development tools, select a backend, and load the package.** Run the package installation once:
+
+```{r r-prerequisites, eval=FALSE}
+install.packages(c("devtools", "here"))
+```
+
+Then start each R session from the repository and run:
 
 ```{r reticulate}
 Sys.setenv(RETICULATE_PYTHON = here::here(
   "work/mojo-backend/reticulate-venv/bin/python"
 ))
+Sys.setenv(SJSDM_MOJO_BACKEND = "auto")
 stopifnot(file.exists(Sys.getenv("RETICULATE_PYTHON")))
 
 # load_all() runs the REPO code -- including the Python backend in
@@ -113,7 +126,7 @@ reticulate::py_config() # use this diagnostic with the pixi setup
 
 > **Why not `library(sjSDM)`?** If you install this fork as a regular package, the installed copy looks for the Mojo worker *inside your R library*, won't find it, and silently falls back to PyTorch -- no error, just no acceleration. Just use `devtools::load_all()` on the checkout as shown above.
 
-> **Key idea for R users:** R talks to Python through the `reticulate` package, which sjSDM handles internally. The only thing you ever do with Python is tell R where the environment lives via `RETICULATE_PYTHON`. The Mojo binary is a separate native program that sjSDM also finds on its own -- you never invoke it directly.
+> **Key idea for R users:** R talks to Python through `reticulate`, which sjSDM handles internally. `RETICULATE_PYTHON` selects the Python environment. The Mojo binary is a separate native worker that sjSDM finds automatically; you do not call it directly.
 
 # Using the Mojo CPU backend
 
@@ -126,32 +139,46 @@ The Mojo backend accelerates the Monte Carlo logit/probit likelihood and its ana
 | Persistent worker | `work/mojo-backend/mc_grad_server_bin` | Long-lived process computing loss + gradients per training batch |
 | R-side bridge | `sjSDM/inst/python/sjSDM_py/mojo_bridge.py` | Feeds tensors/seeds to the worker through a pipe |
 
-You do **not** call either directly. You control the backend with one environment variable.
+You do **not** call either directly. Backend selection is read from Python's environment when a model is built.
 
 ## Turning it on / off
 
+Set the backend **before** `devtools::load_all()` starts Python:
+
 ```{r mojo-switch}
-# AUTO (default behavior): Mojo is used automatically whenever the worker
-# binary exists AND the fit runs on CPU with a logit/probit link.
-# Set explicitly with:
-Sys.setenv(SJSDM_MOJO_BACKEND = "auto")   # default; silent fallback to torch
-
-# Force Mojo on (errors if the binary is missing):
-Sys.setenv(SJSDM_MOJO_BACKEND = "1")
-
-# Force the pure-PyTorch path:
-Sys.setenv(SJSDM_MOJO_BACKEND = "0")
+Sys.setenv(SJSDM_MOJO_BACKEND = "auto") # default: Mojo when eligible
+Sys.setenv(SJSDM_MOJO_BACKEND = "1")    # force Mojo; error if unavailable
+Sys.setenv(SJSDM_MOJO_BACKEND = "0")    # force PyTorch
 ```
 
-Set these **before** calling `sjSDM()` (or restart R after changing them). In `"auto"` mode there is nothing to configure: if the binary is present you get the speedup; if anything disqualifies a fit (GPU device, float64, NaN responses, Gaussian link), sjSDM silently uses PyTorch for those batches.
+Once reticulate has started Python, a later `Sys.setenv()` call is not copied into Python's `os.environ`. Restart R after changing it, or deliberately update the active Python process:
+
+```{r mojo-switch-live}
+set_sjsdm_backend <- function(backend = c("auto", "mojo", "torch")) {
+  backend <- match.arg(backend)
+  value <- c(auto = "auto", mojo = "1", torch = "0")[[backend]]
+  reticulate::py_run_string(sprintf(
+    "import os; os.environ['SJSDM_MOJO_BACKEND'] = '%s'", value
+  ))
+  invisible(value)
+}
+
+set_sjsdm_backend("auto")
+```
+
+Auto mode selects Mojo only for a CPU logit/probit fit when the worker binary exists. Batches containing missing responses use PyTorch. Use the default `dtype = "float32"`; v0.2.0 does not automatically fall back for `float64` and instead raises an error.
+
+> **Important v0.2.0 limit:** server-side noise generation initializes at most 262,144 values per request. Until that is fixed, require `sampling * step_size * biotic_rank <= 262144`. For a larger request, use PyTorch or run `Sys.setenv(SJSDM_MOJO_SEED_TRANSPORT = "0")` before `devtools::load_all()`; the latter sends an explicit, fully initialized noise tensor and can be slower.
 
 ## When does Mojo help?
 
-Benchmarks in this repo (`Code/bench_realdata.R`, `Code/benchmarks/`) show:
+The valid end-to-end benchmarks in this repo (`Code/dev/bench_realdata.R`) use `step_size = 10`, so they stay below the v0.2.0 seed-transport limit. They report:
 
-- Larger problems win most: \~1.9x end-to-end at 10,000 sites x 200 species; \~1.3x at 3,000 x 60; up to \~3.5x per-batch in shape-grid tests.
-- Small runs are still fine -- the backend wins essentially everywhere on CPU as of the latest SIMD kernels.
+- About 1.9x end-to-end at 10,000 sites x 200 species.
+- About 1.3x at 3,000 sites x 60 species.
 - Standard errors (`getSe`) always use PyTorch regardless of the setting, because Hessians need second-order autodiff.
+
+The published shape-grid maxima include requests beyond the seed generator's safe limit and should be rerun after that defect is fixed.
 
 Two caveats worth knowing:
 
@@ -170,21 +197,23 @@ n_species <- 10
 X <- matrix(rnorm(n_sites * 3), n_sites, 3)
 colnames(X) <- c("temp", "precip", "elev")
 
+beta0 <- rnorm(n_species)                               # intercepts
 beta  <- matrix(rnorm(3 * n_species), 3, n_species)     # env responses
-Sigma <- matrix(0.5, n_species, n_species); diag(Sigma) <- 1  # associations
+Sigma <- matrix(0.5, n_species, n_species)
+diag(Sigma) <- 1                                       # associations
 
 library(mvtnorm)
-logit_p <- cbind(1, X) %*% rbind(rnorm(n_species), beta)
+logit_p <- cbind(1, X) %*% rbind(beta0, beta)
 Z <- rmvnorm(n_sites, sigma = Sigma)
 Y <- matrix(rbinom(n_sites * n_species, 1, plogis(logit_p + Z)),
             n_sites, n_species)
 ```
 
-Alternatively, use sjSDM's own simulator (returns a list with `env`, `species`, `response`, and truth):
+Alternatively, use sjSDM's own simulator. The predictor matrix is `env_weights`, the response matrix is `response`, and the truth includes `species_weights` and `correlation`:
 
 ```{r simulate-SDM, eval=FALSE}
 sim <- simulate_SDM(sites = 500, species = 20, correlation = TRUE)
-str(sim)   # list with env, species, response, and simulation truth
+str(sim)
 ```
 
 Or analyze one of the bundled empirical datasets (e.g. `butterflies`, `eucalypts` -- presence/absence matrices shipped with the package).
@@ -198,8 +227,9 @@ fit <- sjSDM(
   Y = Y,                                        # sites x species 0/1 matrix
   env = linear(data = X, formula = ~ temp + precip + elev),
   biotic = bioticStruct(df = 5),                # rank-5 covariance factor
-  iter = 100,                                   # gradient steps
-  sampling = 1000,                               # MC samples per step
+  family = binomial("logit"),
+  iter = 100,                                   # training epochs
+  sampling = 100,                               # MC samples per batch
   verbose = FALSE
 )
 
@@ -208,11 +238,11 @@ summary(fit)
 
 Notes on the knobs:
 
-- `iter`, `sampling`, `batch_size` (set internally to \~10% of sites) are the main speed/accuracy trade-offs. More `sampling` reduces Monte Carlo noise in the likelihood.
-- `link = "probit"` is also supported; the Mojo backend handles both.
+- `iter`, `sampling`, and `step_size` are the main speed/accuracy trade-offs. If omitted, `step_size` is 10% of the sites. More `sampling` reduces Monte Carlo noise in the likelihood.
+- Select a link with `family = binomial("logit")` or `family = binomial("probit")`; Mojo handles both.
 - Optimizer, learning-rate scheduling, and early stopping live in `sjSDMControl()` -- see `?sjSDMControl`.
 - For non-linear responses, swap `linear(...)` for `DNN(data = X, ...)`.
-- Regularize with e.g. `bioticStruct(df = 5, on_diag = 1e-4)` penalties; tune them by cross-validation (Section 8).
+- Regularize the association structure with, for example, `bioticStruct(df = 5, lambda = 1e-4, on_diag = TRUE)`; tune `lambda` by cross-validation.
 
 # Inspecting species associations
 
@@ -220,7 +250,7 @@ Notes on the knobs:
 cov_mat <- getCov(fit)      # estimated species covariance matrix
 round(cov_mat, 2)
 
-getCor(fit)                 # same, as correlations
+getCor(fit)                 # covariance rescaled to correlations
 
 # Do we recover the strong positive association we simulated?
 mean(cov_mat[upper.tri(cov_mat)])
@@ -233,29 +263,29 @@ Species weights (the actual fitted parameter matrices) are available via `getWei
 A useful sanity check: simulate two communities that differ **only** in the strength of their true species associations (weak vs. strong off-diagonal covariance), fit the same environmental model to each, and verify that sjSDM's estimated associations track the truth.
 
 ```{r assoc-recovery}
-simulate_community <- function(assoc_strength) {
+simulate_community <- function(assoc_strength, seed = 7) {
+  set.seed(seed)  # common random numbers isolate the covariance change
   Sig <- matrix(assoc_strength, n_species, n_species)
   diag(Sig) <- 1
-  logit_p_c <- cbind(1, X) %*% rbind(rnorm(n_species), beta)
+  logit_p_c <- cbind(1, X) %*% rbind(beta0, beta)
   Zc <- mvtnorm::rmvnorm(n_sites, sigma = Sig)
   matrix(rbinom(n_sites * n_species, 1, plogis(logit_p_c + Zc)),
          n_sites, n_species)
 }
 
 fit_community <- function(Y_comm, seed = 1) {
-  set.seed(seed)
   m <- sjSDM(
     Y = Y_comm,
     env = linear(data = X),
     biotic = bioticStruct(df = 5),
-    iter = 100, sampling = 100, verbose = FALSE
+    family = binomial("logit"),
+    iter = 100, sampling = 100, seed = seed, verbose = FALSE
   )
   list(model = m, partition = summary(anova(m))[, "R2 Nagelkerke"])
 }
 
-set.seed(7)
-Y_weak   <- simulate_community(0.1)   # nearly independent species
-Y_strong <- simulate_community(0.6)   # strongly associated species
+Y_weak   <- simulate_community(0.1, seed = 7)
+Y_strong <- simulate_community(0.6, seed = 7)
 
 res_weak   <- fit_community(Y_weak)
 res_strong <- fit_community(Y_strong)
@@ -293,9 +323,9 @@ simulate_dispersal_community <- function(dispersal, coords,
                                          n_sp, seed = 1) {
   set.seed(seed)
   # Latent patchiness shared by all species, scaled by dispersal strength:
-  Z <- dispersal * matrix(rep(spatial_field(coords), times = n_sp),
-                          nrow = nrow(coords), byrow = TRUE)
-  logit_p <- cbind(1, X) %*% rbind(rnorm(n_sp),
+  field <- drop(spatial_field(coords))
+  Z <- dispersal * outer(field, rep(1, n_sp))
+  logit_p <- cbind(1, X) %*% rbind(beta0,
                                    matrix(rnorm(3 * n_sp), 3, n_sp))
   matrix(rbinom(nrow(X) * n_sp, 1, plogis(logit_p + Z)),
          nrow(X), n_sp)
@@ -305,12 +335,12 @@ coords <- matrix(runif(n_sites * 2), n_sites, 2)
 SP     <- generateSpatialEV(coords)
 
 fit_spatial <- function(Y_comm) {
-  set.seed(1)
   m <- sjSDM(
     Y = Y_comm,
     env = linear(data = X),
-    spatial = linear(data = SP),
-    iter = 100, verbose = FALSE
+    spatial = linear(data = SP, formula = ~ 0 + .),
+    family = binomial("logit"),
+    iter = 100, seed = 1, verbose = FALSE
   )
   summary(anova(m))
 }
@@ -328,13 +358,13 @@ The spatial component of the partition should grow markedly under strong dispers
 
 ## Do fits detect environmental filtering?
 
-Environmental filtering is the opposite regime: occurrence is controlled mainly by how far each site sits from a species' optimal conditions along the environmental gradients. We hold everything else fixed and scale the *strength* of the true environmental coefficients. Strongly filtered communities should show most explained deviance assigned to the environment, with little left for associations.
+Here, stronger environmental filtering means that occurrence responds more strongly to the measured environmental gradients. We hold everything else fixed and scale the true environmental coefficients. The stronger-filtering community should assign more explained deviance to the environmental component.
 
 ```{r filtering}
 simulate_filtered_community <- function(beta_scale, seed = 1) {
   set.seed(seed)
-  Sig <- matrix(0.3, n_species, n_species); diag(Sig) <- 1
-  logit_p_f <- cbind(1, X) %*% rbind(rnorm(n_species),
+  Sig <- matrix(0.1, n_species, n_species); diag(Sig) <- 1
+  logit_p_f <- cbind(1, X) %*% rbind(beta0,
                                      beta_scale * beta)
   Zf <- mvtnorm::rmvnorm(n_sites, sigma = Sig)
   matrix(rbinom(n_sites * n_species, 1, plogis(logit_p_f + Zf)),
@@ -342,12 +372,12 @@ simulate_filtered_community <- function(beta_scale, seed = 1) {
 }
 
 fit_plain <- function(Y_comm) {
-  set.seed(1)
   m <- sjSDM(
     Y = Y_comm,
     env = linear(data = X),
     biotic = bioticStruct(df = 5),
-    iter = 100, sampling = 100, verbose = FALSE
+    family = binomial("logit"),
+    iter = 100, sampling = 100, seed = 1, verbose = FALSE
   )
   summary(anova(m))
 }
@@ -361,7 +391,7 @@ rbind(
 )
 ```
 
-Under strong filtering you should see both a much larger total $R^2$ and a partition dominated by the environment-only component. Note the flip side: when filtering is weak, residual "associations" soak up more of the partition even though the simulated species are nearly independent -- a reminder that association estimates absorb any unmodeled structure, not only genuine biotic interactions.
+Under strong filtering you should see both a larger total $R^2$ and a partition dominated by the environment-only component. When filtering is weak, the residual association component can absorb more of the unexplained structure. Association estimates can represent omitted environmental or spatial structure as well as genuine biotic interactions.
 
 # Prediction and model fit
 
@@ -387,11 +417,11 @@ summary(av)                 # includes Nagelkerke R^2 per component
 plot(av)                    # barplot of the partition
 ```
 
-For a spatial model (Section 9), `internalStructure()` further splits the association component into local vs. spatially structured parts, and `plotAssemblyEffects()` visualizes species responses along gradients.
+For a spatial model, `internalStructure()` further splits the association component into local and spatially structured parts, and `plotAssemblyEffects()` visualizes species responses along gradients.
 
 # Cross-validation
 
-Use `sjSDM_cv()` to tune regularization strength. Two things people trip on:
+Use `sjSDM_cv()` to tune regularization strength. Two important details:
 
 - It takes **raw data**, not a fitted model.
 - The tuning argument is `tune_steps`, not `IT`.
@@ -402,6 +432,7 @@ options(sjSDM.dev = here::here("sjSDM"))
 cv <- sjSDM_cv(
   Y = Y, env = linear(data = X),
   biotic = bioticStruct(df = 5),
+  family = binomial("logit"),
   tune = "random", tune_steps = 5,
   CV = 3, iter = 100, sampling = 100,
   n_cores = 2
@@ -423,8 +454,9 @@ SP <- generateSpatialEV(coords)          # spatial eigenvectors
 fit_sp <- sjSDM(
   Y = Y,
   env = linear(data = X),
-  spatial = linear(data = SP),
-  iter = 100, verbose = FALSE
+  spatial = linear(data = SP, formula = ~ 0 + .),
+  family = binomial("logit"),
+  iter = 100, seed = 1, verbose = FALSE
 )
 
 anova(fit_sp)   # partitions deviance: environment | space | associations
@@ -437,9 +469,12 @@ anova(fit_sp)   # partitions deviance: environment | space | associations
 ```{r se-plot}
 fit_se <- sjSDM(Y = Y, env = linear(data = X),
                 biotic = bioticStruct(df = 5),
-                se = TRUE, iter = 100, verbose = FALSE)
+                family = binomial("logit"),
+                se = FALSE, iter = 100, seed = 1, verbose = FALSE)
 
-se <- getSe(fit_se)         # standard errors for env coefficients
+# getSe() returns an updated model; the matrix is stored in $se.
+fit_se <- getSe(fit_se)
+se <- fit_se$se
 
 p_coef <- plot(fit_se)      # ggplot2 coefficient plot
 p_coef
@@ -454,31 +489,35 @@ plotAssemblyEffects(intstr)
 
 # Benchmarking torch vs. Mojo yourself
 
-A quick timing harness comparing backends on the same fixed-seed fit:
+A quick timing harness compares backends on the same data and model seed. Because Python is already running, it uses the `set_sjsdm_backend()` helper defined earlier rather than `Sys.setenv()`:
 
 ```{r bench}
 bench_fit <- function(backend) {
-  Sys.setenv(SJSDM_MOJO_BACKEND = backend)
+  set_sjsdm_backend(backend)
   t0 <- Sys.time()
   m <- sjSDM(Y = Y, env = linear(data = X),
              biotic = bioticStruct(df = 5),
-             iter = 100, sampling = 400, verbose = FALSE)
+             family = binomial("logit"),
+             iter = 100, sampling = 100, seed = 123, verbose = FALSE)
   c(seconds = as.numeric(difftime(Sys.time(), t0, units = "secs")),
-    final_loss = tail(m$losses, 1))       # loss trajectories should be close
+    final_loss = tail(m$history, 1))
 }
 
-bench_fit("0")     # pure PyTorch CPU
-bench_fit("auto")  # Mojo when available
+bench_fit("torch")
+bench_fit("auto")
+set_sjsdm_backend("auto")
 ```
 
-Expect the Mojo run to finish faster (more so at larger `n_sites` / `n_species` / `sampling`) with a final loss within a few $10^{-3}$ relative of the torch run -- statistical equivalence, not bitwise identity.
+Run each backend more than once for a serious benchmark and report the distribution of timings. Losses should be close, not bit-identical, because the backends use different random-number generation and float32 reduction order.
 
 # Troubleshooting
 
 | Symptom | Fix |
 |----|----|
-| `is_torch_available()` is FALSE | Run `install_diagnostic()`; most often `RETICULATE_PYTHON` points nowhere or at the wrong environment. Set it before loading sjSDM (Step 4) and restart R. |
-| Mojo backend seems ignored | Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3 of installation. Environment variables are read at fit time, but a fresh R session is safest after switching. |
+| `is_torch_available()` is FALSE | Run `reticulate::py_config()`. Most often `RETICULATE_PYTHON` points nowhere or was set after Python started. Set it before loading sjSDM and restart R. |
+| Mojo backend seems ignored | Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3. If Python is already active, switch with `set_sjsdm_backend()` or restart R. |
+| Large Mojo fit gives suspect results | In v0.2.0, check whether `sampling * step_size * biotic_rank` exceeds 262,144. Use PyTorch or set Python's `SJSDM_MOJO_SEED_TRANSPORT=0` until the generator is fixed. |
+| `dtype = "float64"` fails in auto mode | v0.2.0 does not apply the documented auto fallback for float64. Use `dtype = "float32"` with Mojo or force PyTorch. |
 | Fit diverges to a constant loss | Unstandardized predictors. Use `scale(env)`. Affects both backends equally. |
 | `torch.randn` dimension errors | Fixed in this repository; make sure workers load the patched code (`options(sjSDM.dev = ...)` in parallel CV). |
 | Want GPU (Apple MPS)? | `options(sjSDM.device = "mps")`; note the Mojo backend is CPU-only, so MPS fits fall back to torch. |
@@ -487,7 +526,7 @@ Expect the Mojo run to finish faster (more so at larger `n_sites` / `n_species` 
 # Where to go next
 
 - Package docs: `?sjSDM`, `?bioticStruct`, `?linear`, `?sjSDMControl`, `?sjSDM_cv`.
-- Benchmarks and parity checks: `Code/benchmarks/`, `Code/bench_realdata.R`, `Code/bench_real_occurrence.R`.
+- Benchmarks and parity checks: `Code/dev/benchmarks/`, `Code/dev/bench_realdata.R`, `Code/dev/bench_real_occurrence.R`.
 - Mojo kernel sources and validation harness: `work/mojo-backend/mojo/` and `Feasibility_study.md`.
 - Upgrading Mojo/MAX versions: see the "Maintaining the Mojo/MAX pin" section of [Code/README.md](README.md).
 - Original sjSDM paper: Pichler & Hartig (2021), *A new method for faster and more accurate joint species distribution modelling* (Methods in Ecology & Evolution).
