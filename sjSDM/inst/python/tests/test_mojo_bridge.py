@@ -198,6 +198,22 @@ class TestAutogradIntegration:
 
 
 class TestSeedTransport:
+    @pytest.mark.parametrize("n", [262_143, 262_144, 262_145, 524_289])
+    def test_seeded_request_overwrites_the_entire_noise_buffer(self, n):
+        mu = torch.zeros((n, 1), dtype=torch.float32)
+        sigma = torch.ones((1, 1), dtype=torch.float32)
+        y = torch.ones((n, 1), dtype=torch.float32)
+
+        def seeded_after_poison(value):
+            poison = torch.full((1, n, 1), value, dtype=torch.float32)
+            run_worker(mu, sigma, y, poison, 1.0)
+            return run_worker_seed(mu, sigma, y, 1, 91)
+
+        after_zero = seeded_after_poison(0.0)
+        after_one = seeded_after_poison(1.0)
+        for left, right in zip(after_zero, after_one):
+            assert np.array_equal(left, right)
+
     def test_same_seed_deterministic(self):
         mu, sigma, y, _ = make_case(40, 15, 3, 30, seed=41)
         l1, g1, s1 = run_worker_seed(mu, sigma, y, 30, 12345)

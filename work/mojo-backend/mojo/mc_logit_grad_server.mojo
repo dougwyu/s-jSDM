@@ -49,32 +49,32 @@ def splitmix64(state: UInt64) -> UInt64:
 
 
 def gen_noise(mut noise: Pointer[Float32, MutUntrackedOrigin], n: Int, seed: UInt64):
-    # Fill noise[0..n) with standard normals; element i uses
-    # splitmix64 seeded with seed ^ i so blocks are independent and
-    # generation parallelizes without cross-block dependencies.
-    @parameter
-    def fill(block: Int):
-        var start = block * BLOCK
-        var stop = min(start + BLOCK, n)
-        var idx = start
-        # Marsaglia polar method: no trig; on rejection the attempt
-        # counter is mixed into the draws so retries see fresh uniforms.
-        while idx < stop:
-            var attempt: UInt64 = 0
-            while True:
-                var u1f = Float32((splitmix64(seed ^ UInt64(idx) ^ (attempt << 32)) >> 8) & 0xFFFFFF) * (1.0 / 8388608.0) - 1.0
-                var u2f = Float32((splitmix64(seed ^ UInt64(idx + 1) ^ (attempt << 32)) >> 8) & 0xFFFFFF) * (1.0 / 8388608.0) - 1.0
-                var ss = u1f * u1f + u2f * u2f
-                if ss < 1.0 and ss > 0.0:
-                    var fac = sqrt(-2.0 * log(ss) / ss)
-                    noise[idx] = u1f * fac
-                    if idx + 1 < n:
-                        noise[idx + 1] = u2f * fac
-                    break
-                attempt += 1
-            idx += 2
+    var n_workers = min(N_GEN_BLOCKS, (n + BLOCK - 1) // BLOCK)
 
-    parallelize[fill](N_GEN_BLOCKS)
+    @parameter
+    def fill(worker_id: Int):
+        var start = worker_id * BLOCK
+        var stride = n_workers * BLOCK
+        while start < n:
+            var stop = min(start + BLOCK, n)
+            var idx = start
+            while idx < stop:
+                var attempt: UInt64 = 0
+                while True:
+                    var u1f = Float32((splitmix64(seed ^ UInt64(idx) ^ (attempt << 32)) >> 8) & 0xFFFFFF) * (1.0 / 8388608.0) - 1.0
+                    var u2f = Float32((splitmix64(seed ^ UInt64(idx + 1) ^ (attempt << 32)) >> 8) & 0xFFFFFF) * (1.0 / 8388608.0) - 1.0
+                    var ss = u1f * u1f + u2f * u2f
+                    if ss < 1.0 and ss > 0.0:
+                        var fac = sqrt(-2.0 * log(ss) / ss)
+                        noise[idx] = u1f * fac
+                        if idx + 1 < n:
+                            noise[idx + 1] = u2f * fac
+                        break
+                    attempt += 1
+                idx += 2
+            start += stride
+
+    parallelize[fill](n_workers)
 
 
 def read_exact(mut sin: FileDescriptor, ptr: Pointer[UInt8, MutUntrackedOrigin], n: Int) raises -> Bool:
