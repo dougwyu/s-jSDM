@@ -1,39 +1,121 @@
 ---
-title: "sjSDM from R: tutorial and Mojo CPU setup"
+title: "sjSDM from R: joint species distribution models and Mojo CPU setup"
 author: "sjSDM developers"
 date: "`r Sys.Date()`"
 output:
   html_document:
     toc: true
-    toc_depth: 2
+    toc_depth: 3
+    toc_float: true
     number_sections: true
 ---
 
 ```{r setup, include=FALSE}
+# Set run_live to TRUE to knit this document with real fits, tables, and
+# figures. It is FALSE by default because the fits need the reticulate/pixi
+# environment described in the Installation section, and a few chunks
+# (cross-validation, standard errors) are slow.
+run_live <- FALSE
+
 knitr::opts_chunk$set(
-  eval = FALSE,   # heavy model fits; knit fast and let readers run chunks
-  comment = "#>"
+  eval       = run_live,
+  comment    = "#>",
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2,
+  dpi        = 110
 )
 ```
 
-This tutorial has two parts:
+This tutorial has three parts:
 
-1.  Install and select either the standard PyTorch backend or the optional Mojo CPU backend.
-2.  Work through the main sjSDM workflow: simulation, fitting, species associations, prediction, $R^2$, variation partitioning, cross-validation, spatial models, standard errors, and plotting.
+1.  Understand what a joint species distribution model is, what it estimates, and what its output can and cannot support.
+2.  Install and select either the standard PyTorch backend or the optional Mojo CPU backend.
+3.  Work through the main sjSDM workflow: simulation, fitting, checking that the model recovers known truth, species associations, assembly-process tests, prediction, $R^2$, variation partitioning, cross-validation, spatial models, standard errors, and plotting.
 
-Code chunks are not run while this document is rendered. Run them interactively, in order. The basic fit is quick; cross-validation, ANOVA refits, and standard errors take longer.
+Code chunks do not run while this document is rendered, unless you set `run_live <- TRUE` in the setup chunk. Run them interactively, in order. The basic fit takes a second or two; cross-validation, ANOVA refits, and standard errors take longer.
 
-# Background: what is sjSDM?
+If you already know jSDM theory and only want the software, skip to the Installation section. If you have never fitted one, read the next section first, because most of the mistakes people make with these models are conceptual rather than computational.
 
-A *species distribution model* (SDM) relates species occurrence to the environment. A *joint* SDM (jSDM) models all species at once and estimates **species associations** -- residual correlations between species after accounting for the environment. These associations can indicate biotic interactions, shared unmeasured habitat variables, or dispersal history.
+# Joint species distribution models: the concepts
 
-sjSDM implements scalable jSDMs using deep-learning machinery (PyTorch):
+## From one species at a time to all species at once
 
-- Multivariate probit or logit likelihoods with a **low-rank covariance** for species associations (`bioticStruct(df = ...)`).
-- Environmental (and optionally spatial) predictor layers via `linear()` formulas, plus optional deep neural network layers via `DNN()`.
-- Fast minibatch-gradient-descent fitting that scales to tens of thousands of sites.
+A *species distribution model* (SDM) relates the occurrence of one species to environmental predictors. Fit one per species and you have a *stacked* SDM: a collection of independent models. Stacking is easy, and for pure prediction of one species at a time it is often fine. What it cannot do is say anything about how species co-occur beyond what the environment already explains, because it assumes, by construction, that the species are independent once you condition on the covariates.
 
-The optional **Mojo backend** replaces the inner Monte Carlo likelihood computation (the hot loop) with a hand-written kernel compiled to native Apple Silicon code. Predictor layers, optimizers, prediction, and Hessian-based standard errors remain in PyTorch.
+A *joint* SDM (jSDM) fits all species simultaneously and adds one thing: a **residual correlation matrix** across species. After removing the environmental signal, do species still tend to occur together, or to exclude each other? That residual structure is the extra parameter, and it is the reason to use a jSDM at all.
+
+Two practical consequences follow immediately.
+
+- **Species with few records borrow strength.** A rare species with 12 occurrences gets a badly determined coefficient on its own. In a joint model its latent factor loadings are estimated using the co-occurrence pattern it shares with better-sampled species, which stabilises the fit.
+- **Predictions become conditional.** With a joint model you can ask "given that species A is present here, how likely is species B?" A stacked model cannot answer that question, because it has already assumed the answer is "no different from usual".
+
+## The model sjSDM fits
+
+For site $i$ and species $j$, sjSDM models the observed occurrence $y_{ij}$ as
+
+$$y_{ij} \sim \text{Bernoulli}(p_{ij}), \qquad g(p_{ij}) = \beta_{0j} + \mathbf{x}_i^\top \boldsymbol{\beta}_j + e_{ij}$$
+
+where $g$ is the link (logit or probit), $\mathbf{x}_i$ are the environmental predictors at site $i$, and $\boldsymbol{\beta}_j$ are that species' environmental responses. The last term is the joint part: the site-level residual vector $\mathbf{e}_i = (e_{i1}, \dots, e_{iJ})$ is drawn once per site from a multivariate normal shared by all species,
+
+$$\mathbf{e}_i \sim \mathcal{N}_J(\mathbf{0}, \boldsymbol{\Sigma}), \qquad \boldsymbol{\Sigma} = \boldsymbol{\Lambda}\boldsymbol{\Lambda}^\top .$$
+
+$\boldsymbol{\Lambda}$ is a $J \times d$ matrix of factor loadings, where $d$ is the rank you choose with `bioticStruct(df = d)`. Writing $\mathbf{e}_i = \boldsymbol{\Lambda}\mathbf{z}_i$ with $\mathbf{z}_i \sim \mathcal{N}_d(\mathbf{0}, \mathbf{I})$ gives the equivalent *latent variable* form used in the HMSC and boral literature: $d$ unmeasured site-level gradients, each species loading onto them with its own weights.
+
+Three things to take from this.
+
+- **The low rank is the whole trick.** A free $J \times J$ covariance has $J(J+1)/2$ parameters, which for 200 species is over 20,000 and is hopeless to estimate. The factorisation reduces it to $J \times d$. With `df = 5` and 200 species that is 1,000 parameters instead. You choose `df`; it is a modelling decision, not a nuisance.
+- **The latent scale is not fixed.** sjSDM does not constrain $\text{diag}(\boldsymbol{\Sigma})$ to 1, so the residual variance is free and trades off against the size of $\boldsymbol{\beta}$. This is why `getCov()` returns diagonal entries well above 1, and why you should compare estimated **correlations**, not covariances, against a known truth. The recovery section below does exactly that.
+- **The likelihood has no closed form.** To get the probability of an observed site you must integrate over $\mathbf{e}_i$, a $J$-dimensional integral with no analytic solution for either link. sjSDM approximates it by Monte Carlo: draw `sampling` values of $\mathbf{e}_i$ per site per minibatch and average. That inner loop is where nearly all the compute goes, and it is exactly the loop the optional Mojo backend replaces.
+
+## What a residual correlation does and does not mean
+
+This is the single most important idea in the tutorial, and the one most often got wrong in published applications.
+
+A positive residual correlation between two species means: *after accounting for the environmental predictors you supplied*, these species co-occur more than independence would predict. It does **not** mean they interact.
+
+At least four things produce the same signal.
+
+- A genuine biotic interaction: facilitation, shared mutualists, predator and prey.
+- A **missing environmental covariate**. If both species track soil pH and you did not measure soil pH, their shared response to it lands in the residual correlation. This is by far the most common cause in real data.
+- **Shared spatial structure**, from dispersal limitation or historical biogeography, that no measured variable captures.
+- **Sampling artefacts**: a shared detection bias, a shared observer, a shared season.
+
+The practical consequence is that residual correlations are a description of what your covariates failed to explain, not a measurement of ecological interaction. Adding a covariate can make an association vanish, and that is the model working correctly, not a contradiction. The honest way to report one is "residual association, conditional on this set of predictors", and the honest way to strengthen an interaction claim is to show that the association survives the addition of plausible confounders, including space.
+
+The dispersal-limitation and environmental-filtering sections below are built to make this concrete: they show the same association machinery picking up structure that is not an interaction at all.
+
+## Four assembly processes, and which ones a jSDM can separate
+
+Community ecology conventionally names four processes that determine which species occur where: environmental filtering, biotic interactions, dispersal, and stochasticity. A jSDM addresses them unevenly, and it helps to be explicit about which is which.
+
+- **Environmental filtering** is the $\mathbf{x}_i^\top \boldsymbol{\beta}_j$ term. This is what the model estimates best, and variation partitioning reports it as the "Abiotic" component.
+- **Dispersal** is partly addressable, but only if you give the model spatial predictors. `generateSpatialEV()` builds Moran eigenvector maps from coordinates, and `sjSDM(spatial = ...)` fits them as a separate component so the partition reports "Spatial" alongside "Abiotic". Without spatial predictors, spatial structure has nowhere to go except the residual correlation.
+- **Biotic interactions** are what people hope $\boldsymbol{\Sigma}$ measures. It measures residual association, which is an upper bound on the interaction signal and is confounded with everything in the previous subsection.
+- **Stochasticity** is the unexplained remainder, and no partitioning separates it from model misspecification.
+
+So a fair summary of what the machinery delivers: a good estimate of environmental response, a decomposition of explained deviance into environment, space, and residual association, and a residual association matrix that requires careful interpretation.
+
+## Practical guidance before you fit anything
+
+- **Standardize your predictors.** sjSDM fits can diverge on raw-scale covariates, for example temperatures near 6000. Use `scale()`. This affects both backends and is the most common cause of a fit that goes nowhere.
+- **Watch prevalence.** Species present at fewer than roughly 10 sites contribute very little and can destabilise the association estimates. Dropping them is defensible; report that you did.
+- **Sites matter more than species.** The residual correlation is estimated across sites, so 500 sites and 30 species supports far better association inference than 30 sites and 500 species, even though the second matrix is larger.
+- **Choose `df` deliberately.** It is the number of latent gradients. A small value (2 to 5) is a strong regulariser and is a reasonable default; increasing it lets the model represent more association structure at the cost of variance. Tune it, or `lambda`, by cross-validation rather than by eye.
+- **Expect shrinkage.** Estimated correlations are systematically smaller in magnitude than the truth, for reasons the recovery section quantifies. Compare patterns and orderings across datasets rather than treating a single coefficient as calibrated.
+- **Set a seed and report it.** The likelihood is stochastic. Two runs of the same model on the same data will not be identical.
+
+## Where each idea lives in the sjSDM API
+
+- The response matrix $\mathbf{Y}$: the `Y` argument, sites by species, 0/1.
+- Environmental responses $\boldsymbol{\beta}$: `env = linear(data = X, formula = ~ ...)`, or `DNN()` for a non-linear predictor.
+- Spatial component: `spatial = linear(data = SP, formula = ~ 0 + .)` with `SP` from `generateSpatialEV()`.
+- Association structure $\boldsymbol{\Lambda}$: `biotic = bioticStruct(df = d, lambda = ..., on_diag = ...)`.
+- Link $g$: `family = binomial("logit")` or `binomial("probit")`.
+- Monte Carlo effort: `sampling`; optimisation effort: `iter` and `step_size`.
+- Fitted associations: `getCov()` and `getCor()`. Fitted coefficients: `coef()`. Partition: `anova()`.
+
+The optional **Mojo backend** replaces the inner Monte Carlo likelihood computation with a hand-written kernel compiled to native Apple Silicon code. Predictor layers, optimizers, prediction, and Hessian-based standard errors remain in PyTorch. It changes speed, not the model.
 
 # Installation
 
@@ -61,7 +143,7 @@ This tutorial covers the **Mojo-accelerated CPU build** of sjSDM, which currentl
 > install_diagnostic()   # use this detailed report if something is off
 > ```
 >
-> Everything from Section 4 onward of this tutorial works identically with either install; just skip Sections 2--3 (Mojo setup and switching).
+> Everything from the simulation section onward works identically with either install; just skip the Mojo setup and switching sections.
 
 ## One install path: clone + pixi
 
@@ -104,7 +186,7 @@ test -x reticulate-venv/bin/python
 **Step 4 -- install the R-side development tools, select a backend, and load the package.** Run the package installation once:
 
 ```{r r-prerequisites, eval=FALSE}
-install.packages(c("devtools", "here"))
+install.packages(c("devtools", "here", "mvtnorm", "knitr"))
 ```
 
 Then start each R session from the repository and run:
@@ -134,10 +216,8 @@ reticulate::py_config() # use this diagnostic with the pixi setup
 
 The Mojo backend accelerates the Monte Carlo logit/probit likelihood and its analytic gradients on **CPU**. It consists of the two pieces you built during installation:
 
-| Piece | File | Role |
-|----|----|----|
-| Persistent worker | `work/mojo-backend/mc_grad_server_bin` | Long-lived process computing loss + gradients per training batch |
-| R-side bridge | `sjSDM/inst/python/sjSDM_py/mojo_bridge.py` | Feeds tensors/seeds to the worker through a pipe |
+- **Persistent worker**, `work/mojo-backend/mc_grad_server_bin`: a long-lived process that computes loss and gradients for each training batch.
+- **R-side bridge**, `sjSDM/inst/python/sjSDM_py/mojo_bridge.py`: feeds tensors and seeds to the worker through a pipe.
 
 You do **not** call either directly. Backend selection is read from Python's environment when a model is built.
 
@@ -145,7 +225,8 @@ You do **not** call either directly. Backend selection is read from Python's env
 
 Set the backend **before** `devtools::load_all()` starts Python:
 
-```{r mojo-switch}
+```{r mojo-switch, eval=FALSE}
+# Pick ONE of these; they are alternatives, not a sequence.
 Sys.setenv(SJSDM_MOJO_BACKEND = "auto") # default: Mojo when eligible
 Sys.setenv(SJSDM_MOJO_BACKEND = "1")    # force Mojo; error if unavailable
 Sys.setenv(SJSDM_MOJO_BACKEND = "0")    # force PyTorch
@@ -185,29 +266,48 @@ Two caveats worth knowing:
 1.  Cross-backend results are **statistically equivalent, not bit-identical**: float32 arithmetic differs slightly between the Mojo kernel and PyTorch's einsum, so loss histories agree only to \~$10^{-3}$ relative.
 2.  Keep predictors **standardized**. sjSDM fits can diverge on raw-scale covariates (e.g., temperatures near 6000); this affects both backends. `scale(env)` fixes it.
 
-# Data: simulate a community
+# Data: simulate a community with known truth
 
-We create a 200-site, 10-species community with known environmental responses and known species associations, so we can check that sjSDM recovers them.
+The whole point of simulating is that you know the answer. We build a 200-site, 10-species community in which every ingredient of the model in the concepts section is set by hand, so that the next section can check each one against what sjSDM recovers.
+
+The associations are given a **two-guild block structure** rather than a single constant value: species 1 to 5 are positively associated with each other, species 6 to 10 likewise, and the two guilds are negatively associated across the divide. A constant off-diagonal would make the recovery check vacuous, because there would be no pattern to recover -- only a single number to hit.
 
 ```{r simulate-data}
+library(mvtnorm)
+
 set.seed(42)
 n_sites   <- 200
 n_species <- 10
 
+# 1. Environment: three standardized predictors.
 X <- matrix(rnorm(n_sites * 3), n_sites, 3)
 colnames(X) <- c("temp", "precip", "elev")
 
-beta0 <- rnorm(n_species)                               # intercepts
-beta  <- matrix(rnorm(3 * n_species), 3, n_species)     # env responses
-Sigma <- matrix(0.5, n_species, n_species)
-diag(Sigma) <- 1                                       # associations
+# 2. Environmental responses: one intercept and three slopes per species.
+beta0 <- rnorm(n_species)                            # intercepts
+beta  <- matrix(rnorm(3 * n_species), 3, n_species)  # slopes
+beta_true <- rbind(beta0, beta)                      # 4 x species, the truth
+rownames(beta_true) <- c("(Intercept)", colnames(X))
+colnames(beta_true) <- paste0("sp", 1:n_species)
 
-library(mvtnorm)
-logit_p <- cbind(1, X) %*% rbind(beta0, beta)
+# 3. Associations: two guilds, positive within and negative between.
+guild <- rep(c("A", "B"), each = n_species / 2)
+Sigma <- outer(guild, guild, function(a, b) ifelse(a == b, 0.6, -0.3))
+diag(Sigma) <- 1
+stopifnot(all(eigen(Sigma)$values > 0))   # must be a valid covariance
+
+# 4. Assemble: linear predictor + correlated site-level residual, then flip coins.
+logit_p <- cbind(1, X) %*% beta_true
 Z <- rmvnorm(n_sites, sigma = Sigma)
 Y <- matrix(rbinom(n_sites * n_species, 1, plogis(logit_p + Z)),
             n_sites, n_species)
+colnames(Y) <- colnames(beta_true)
+
+# Sanity check before fitting anything: prevalence should not be extreme.
+round(colMeans(Y), 3)
 ```
+
+Note that step 4 is the generative model from the concepts section, written out literally: a linear predictor, plus one draw of $\mathbf{e}_i$ per site from $\mathcal{N}(\mathbf{0}, \boldsymbol{\Sigma})$, pushed through the inverse logit, then a Bernoulli trial. If you can read that block, you can read the model.
 
 Alternatively, use sjSDM's own simulator. The predictor matrix is `env_weights`, the response matrix is `response`, and the truth includes `species_weights` and `correlation`:
 
@@ -230,11 +330,14 @@ fit <- sjSDM(
   family = binomial("logit"),
   iter = 100,                                   # training epochs
   sampling = 100,                               # MC samples per batch
+  seed = 1,
   verbose = FALSE
 )
 
 summary(fit)
 ```
+
+`summary()` prints three blocks: the log-likelihood and regularisation loss, the estimated species-species correlation matrix, and the coefficient table. With `se = TRUE` or after `getSe()`, the coefficient table gains standard errors, z values, and p values.
 
 Notes on the knobs:
 
@@ -243,6 +346,162 @@ Notes on the knobs:
 - Optimizer, learning-rate scheduling, and early stopping live in `sjSDMControl()` -- see `?sjSDMControl`.
 - For non-linear responses, swap `linear(...)` for `DNN(data = X, ...)`.
 - Regularize the association structure with, for example, `bioticStruct(df = 5, lambda = 1e-4, on_diag = TRUE)`; tune `lambda` by cross-validation.
+- `df` is the rank $d$ from the concepts section. It caps how much association structure the model can represent.
+
+# Does the model recover the truth?
+
+This is the section to run before trusting a jSDM on real data, and the one to re-run whenever you change the fitting settings. We compare three things against the values used to simulate: the environmental coefficients, the species associations, and the fitted occurrence probabilities. Each comparison gets a table and a figure, because they answer different questions: the table says how close, the figure says in what way it is wrong.
+
+## A reusable recovery summary
+
+Every comparison below regresses estimates on truth. The slope is the informative number: 1 means unbiased, less than 1 means the estimates are shrunk toward zero, and the correlation says how well the *pattern* is recovered independently of scale.
+
+```{r recovery-helper}
+recovery_stats <- function(truth, est) {
+  truth <- as.vector(truth); est <- as.vector(est)
+  f <- stats::lm(est ~ truth)
+  c(n           = length(truth),
+    correlation = stats::cor(truth, est),
+    slope       = unname(stats::coef(f)[2]),
+    intercept   = unname(stats::coef(f)[1]),
+    RMSE        = sqrt(mean((est - truth)^2)),
+    bias        = mean(est - truth))
+}
+```
+
+## Environmental coefficients
+
+`coef(fit)[[1]]` is a species-by-coefficient matrix, so transposing it lines it up with `beta_true`. The row names come from `fit$names`.
+
+```{r recovery-beta}
+beta_hat <- t(coef(fit)[[1]])
+dimnames(beta_hat) <- dimnames(beta_true)
+
+tab_beta <- rbind(
+  `all coefficients` = recovery_stats(beta_true, beta_hat),
+  t(sapply(rownames(beta_true),
+           function(r) recovery_stats(beta_true[r, ], beta_hat[r, ])))
+)
+
+knitr::kable(tab_beta, digits = 3,
+             caption = "Recovery of environmental coefficients")
+```
+
+```{r recovery-beta-plot, fig.width=8, fig.height=4}
+op <- par(mfrow = c(1, 2), mar = c(4.2, 4.2, 2.6, 1))
+cols <- grDevices::hcl.colors(nrow(beta_true), "Dark 3")
+
+plot(beta_true, beta_hat, pch = 19, col = cols[row(beta_true)], asp = 1,
+     xlab = "true coefficient", ylab = "estimated coefficient",
+     main = "Environmental coefficients")
+abline(0, 1, lty = 2)                                     # perfect recovery
+abline(stats::lm(as.vector(beta_hat) ~ as.vector(beta_true)), col = "grey40")
+legend("topleft", rownames(beta_true), col = cols, pch = 19,
+       bty = "n", cex = 0.75)
+
+boxplot(t(beta_hat - beta_true), col = "grey90",
+        ylab = "estimate - truth", main = "Error by term")
+abline(h = 0, lty = 2)
+par(op)
+```
+
+With the settings above you should see a correlation near 0.96 and a slope near 1.0: the environmental part of a jSDM is estimated well and essentially without bias. The boxplot should straddle zero for every term. The intercept is usually the best-recovered coefficient, because every site contributes to it.
+
+## Species associations
+
+Two adjustments matter here, both of them consequences of points made in the concepts section.
+
+- Compare **correlations**, not covariances. The latent scale is unidentified, so `getCov()` diagonals are not 1 and its off-diagonals are not on the same scale as `Sigma`.
+- Report within-guild and between-guild pairs separately. Within each group the true correlation is constant, so a correlation coefficient is undefined there; the informative summary is the mean estimate and how far it is shrunk.
+
+```{r recovery-assoc}
+cor_true <- stats::cov2cor(Sigma)
+cor_hat  <- getCor(fit)
+dimnames(cor_true) <- dimnames(cor_hat) <-
+  list(colnames(Y), colnames(Y))
+
+ut   <- upper.tri(cor_true)                 # each pair once
+same <- outer(guild, guild, "==")[ut]       # within-guild pairs
+
+knitr::kable(rbind(`all pairs` = recovery_stats(cor_true[ut], cor_hat[ut])),
+             digits = 3, caption = "Recovery of species associations, all pairs")
+
+by_group <- function(keep, label) data.frame(
+  pairs        = label,
+  n            = sum(keep),
+  true         = mean(cor_true[ut][keep]),
+  estimated    = mean(cor_hat[ut][keep]),
+  sd_estimated = stats::sd(cor_hat[ut][keep]),
+  shrinkage    = mean(cor_hat[ut][keep]) / mean(cor_true[ut][keep]),
+  correct_sign = mean(sign(cor_hat[ut][keep]) == sign(cor_true[ut][keep]))
+)
+
+knitr::kable(rbind(by_group(same,  "within guild (true +0.6)"),
+                   by_group(!same, "between guild (true -0.3)")),
+             digits = 3, row.names = FALSE,
+             caption = "Estimated associations by guild pair")
+```
+
+```{r recovery-assoc-plot, fig.width=9, fig.height=3.6}
+op <- par(mfrow = c(1, 3), mar = c(4, 4, 2.6, 1))
+
+heat <- function(M, main) {
+  image(seq_len(ncol(M)), seq_len(nrow(M)), t(M[nrow(M):1, ]),
+        col = grDevices::hcl.colors(50, "Blue-Red 3"),
+        breaks = seq(-1, 1, length.out = 51),
+        axes = FALSE, xlab = "", ylab = "", main = main)
+  axis(1, seq_len(ncol(M)), colnames(M), las = 2, cex.axis = 0.6, tick = FALSE)
+  axis(2, seq_len(nrow(M)), rev(rownames(M)), las = 2, cex.axis = 0.6, tick = FALSE)
+}
+heat(cor_true, "True correlations")
+heat(cor_hat,  "Estimated correlations")
+
+plot(cor_true[ut], cor_hat[ut], pch = 19, asp = 1,
+     col = ifelse(same, "#1b7837", "#762a83"),
+     xlim = c(-1, 1), ylim = c(-1, 1),
+     xlab = "true correlation", ylab = "estimated correlation",
+     main = "Pairwise")
+abline(0, 1, lty = 2); abline(h = 0, col = "grey80"); abline(v = 0, col = "grey80")
+abline(stats::lm(cor_hat[ut] ~ cor_true[ut]), col = "grey40")
+legend("topleft", c("within guild", "between guild"),
+       col = c("#1b7837", "#762a83"), pch = 19, bty = "n", cex = 0.75)
+par(op)
+```
+
+Read the three panels together. The two heatmaps should show the same block structure, the estimated one noisier and paler. The scatter should show the fitted line clearly **below** the 1:1 dashed line: with these settings the mean within-guild correlation comes back around 0.25 against a truth of 0.6, and the between-guild mean around -0.16 against -0.3. The correlation across all pairs is about 0.72 and the slope about 0.46.
+
+That gap is not a bug, and it is worth understanding because it recurs in every real analysis.
+
+- Binary data carry little information per observation. Each 0/1 is a single coin flip, so the latent correlation is only weakly constrained.
+- The rank-$d$ factorisation plus any `lambda` penalty is a shrinkage estimator by construction.
+- Monte Carlo noise in the likelihood adds variance that biases estimated correlations toward zero.
+- Finite `iter` means the optimiser may not have fully converged.
+
+The practical rule that follows: **trust the sign and the ordering, not the magnitude.** Comparisons between datasets fitted with identical settings are meaningful; a single correlation read off as a calibrated effect size is not.
+
+## Occurrence probabilities
+
+The environmental and association parts can each be imperfect while predictions are still good, so check the prediction directly.
+
+```{r recovery-prob, fig.width=5, fig.height=4.6}
+p_true <- plogis(logit_p)     # truth conditional on the environment only
+p_hat  <- predict(fit)
+
+knitr::kable(rbind(`occurrence probability` = recovery_stats(p_true, p_hat)),
+             digits = 3, caption = "Recovery of occurrence probabilities")
+
+par(mar = c(4.2, 4.2, 2.6, 1))
+smoothScatter(as.vector(p_true), as.vector(p_hat), nrpoints = 0, asp = 1,
+              xlab = "true P(occurrence)", ylab = "predicted P(occurrence)",
+              main = "Site x species probabilities")
+abline(0, 1, lty = 2)
+```
+
+Expect a correlation around 0.98 and a slope near 1. Prediction is the easiest of the three targets, which is why good predictive performance is weak evidence that the association estimates are trustworthy. Report recovery of the quantity you intend to interpret, not the one that looks best.
+
+## What to do when recovery is poor
+
+If you run this section on a simulation resembling your real data and the coefficients do not come back, fix that before touching real data. In order of how often each is the culprit: unstandardized predictors, too few sites relative to species, extreme prevalence, `iter` too small for convergence, `sampling` too small so the likelihood is too noisy, and `df` too small to represent the association structure you simulated.
 
 # Inspecting species associations
 
@@ -252,65 +511,99 @@ round(cov_mat, 2)
 
 getCor(fit)                 # covariance rescaled to correlations
 
-# Do we recover the strong positive association we simulated?
-mean(cov_mat[upper.tri(cov_mat)])
+# The diagonal is NOT 1: the latent scale is free. Use getCor() for
+# anything you intend to compare against another model or a truth.
+round(diag(cov_mat), 2)
 ```
 
 Species weights (the actual fitted parameter matrices) are available via `getWeights(fit)` / `setWeights()` if you need raw access.
 
+# Detecting assembly processes
+
+The three subsections below each simulate two communities that differ in exactly one process, fit the same model to both, and ask whether the model's output separates them. This is the design to copy when you want to know whether your own dataset can support a claim: build the contrast you care about, and check that the model can see it before you go looking for it in real data.
+
+All three read `summary(anova(m))`, whose rows are the partition components and whose `R2 Nagelkerke` column is the one to compare. Note the `setNames()` call: extracting a column from that data frame drops the component names, so they have to be reattached before the results can be stacked or plotted.
+
+```{r partition-helper}
+partition_of <- function(m) {
+  av <- summary(anova(m))
+  stats::setNames(av[, "R2 Nagelkerke"], rownames(av))
+}
+
+partition_barplot <- function(tab, components, main, labels = rownames(tab)) {
+  m <- t(tab[, components, drop = FALSE])
+  barplot(m, beside = TRUE, names.arg = labels,
+          col = grDevices::hcl.colors(length(components), "Dark 3"),
+          ylab = "R2 (Nagelkerke)", main = main,
+          ylim = c(0, max(m) * 1.35),       # headroom so the legend clears the bars
+          legend.text = components,
+          args.legend = list(x = "topleft", bty = "n", cex = 0.85,
+                             horiz = length(components) <= 2))
+}
+```
+
 ## Do fits recover known association strength?
 
-A useful sanity check: simulate two communities that differ **only** in the strength of their true species associations (weak vs. strong off-diagonal covariance), fit the same environmental model to each, and verify that sjSDM's estimated associations track the truth.
+Simulate two communities that differ **only** in the strength of their true species associations, fit the same environmental model to each, and verify that both the estimated correlations and the variation partition track the truth.
 
 ```{r assoc-recovery}
 simulate_community <- function(assoc_strength, seed = 7) {
   set.seed(seed)  # common random numbers isolate the covariance change
   Sig <- matrix(assoc_strength, n_species, n_species)
   diag(Sig) <- 1
-  logit_p_c <- cbind(1, X) %*% rbind(beta0, beta)
   Zc <- mvtnorm::rmvnorm(n_sites, sigma = Sig)
-  matrix(rbinom(n_sites * n_species, 1, plogis(logit_p_c + Zc)),
+  matrix(rbinom(n_sites * n_species, 1, plogis(logit_p + Zc)),
          n_sites, n_species)
 }
 
 fit_community <- function(Y_comm, seed = 1) {
-  m <- sjSDM(
-    Y = Y_comm,
-    env = linear(data = X),
-    biotic = bioticStruct(df = 5),
-    family = binomial("logit"),
-    iter = 100, sampling = 100, seed = seed, verbose = FALSE
-  )
-  list(model = m, partition = summary(anova(m))[, "R2 Nagelkerke"])
+  sjSDM(Y = Y_comm, env = linear(data = X),
+        biotic = bioticStruct(df = 5), family = binomial("logit"),
+        iter = 100, sampling = 100, seed = seed, verbose = FALSE)
 }
 
-Y_weak   <- simulate_community(0.1, seed = 7)
-Y_strong <- simulate_community(0.6, seed = 7)
-
-res_weak   <- fit_community(Y_weak)
-res_strong <- fit_community(Y_strong)
-
-# Variation partitioning should assign more deviance to associations
-# when the true associations are strong:
-rbind(
-  weak_associations   = res_weak$partition,
-  strong_associations = res_strong$partition
-)
-
-# ... and the mean estimated off-diagonal covariance should be larger:
 mean_offdiag <- function(m) {
-  C <- getCov(m)
+  C <- getCor(m)
   mean(C[upper.tri(C)])
 }
-round(c(weak   = mean_offdiag(res_weak$model),
-        strong = mean_offdiag(res_strong$model)), 3)
+
+m_weak   <- fit_community(simulate_community(0.1))
+m_strong <- fit_community(simulate_community(0.6))
+
+assoc_tab <- rbind(`weak (true r = 0.1)`   = partition_of(m_weak),
+                   `strong (true r = 0.6)` = partition_of(m_strong))
+assoc_tab <- cbind(assoc_tab,
+                   `true correlation`      = c(0.1, 0.6),
+                   `mean est. correlation` = c(mean_offdiag(m_weak),
+                                               mean_offdiag(m_strong)))
+
+knitr::kable(assoc_tab, digits = 3,
+             caption = "Association strength: truth, partition, and estimate")
 ```
 
-You should see the strong-association community show a substantially larger association component in the partition and a larger mean fitted covariance. This is a good template for testing whether a dataset actually supports inference about biotic structure before interpreting it.
+```{r assoc-recovery-plot, fig.width=8, fig.height=3.8}
+op <- par(mfrow = c(1, 2), mar = c(4, 4.2, 2.6, 1))
+partition_barplot(assoc_tab, c("Abiotic", "Associations"),
+                  "Variation partitioning")
+plot(assoc_tab[, "true correlation"], assoc_tab[, "mean est. correlation"],
+     pch = 19, cex = 1.4, xlim = c(0, 0.8), ylim = c(0, 0.8), asp = 1,
+     xlab = "true mean correlation", ylab = "estimated mean correlation",
+     main = "Association strength")
+abline(0, 1, lty = 2)
+text(assoc_tab[, "true correlation"], assoc_tab[, "mean est. correlation"],
+     labels = c("weak", "strong"), pos = 3, cex = 0.8)
+par(op)
+```
+
+The strong-association community should show a substantially larger `Associations` component and a larger mean fitted correlation, while `Abiotic` stays essentially unchanged -- the environmental signal is identical by construction. Both points should sit below the 1:1 line, which is the same shrinkage seen in the recovery section, and the reason the useful comparison is between the two points rather than between either point and the truth.
 
 ## Do fits detect dispersal limitation?
 
-Dispersal limitation leaves a characteristic fingerprint: species occur (or fail to) in **spatially coherent patches** that no measured environmental variable explains. We simulate this by drawing each community's latent site effects from a *spatially autocorrelated* Gaussian field over the coordinates -- weak or strong -- while keeping environmental responses and associations identical. A spatial sjSDM should assign more deviance to the spatial component when dispersal limitation is strong.
+Dispersal limitation leaves a characteristic fingerprint: species occur (or fail to) in **spatially coherent patches** that no measured environmental variable explains. We simulate this by drawing latent site effects from a *spatially autocorrelated* Gaussian field over the coordinates -- weak or strong -- while keeping environmental responses identical.
+
+This section asks two questions, and the second is the more important one. Does a spatial sjSDM assign more deviance to the spatial component when dispersal limitation is strong? And what happens to that signal if you leave the spatial component out?
+
+**A warning about the size of the spatial basis.** `generateSpatialEV()` returns a large set of Moran eigenvector maps, 63 columns for the 200 sites used here. Fitting all of them saturates the spatial component: it explains almost everything under both weak and strong dispersal, and the contrast disappears entirely. That is overfitting, not detection. Use a modest number of leading eigenvectors, or select them by cross-validation.
 
 ```{r dispersal}
 # Exponentially decaying spatial covariance over coordinates:
@@ -319,79 +612,144 @@ spatial_field <- function(coords, range = 0.5) {
   mvtnorm::rmvnorm(1, sigma = exp(-D / range))   # one site-level draw
 }
 
-simulate_dispersal_community <- function(dispersal, coords,
-                                         n_sp, seed = 1) {
+simulate_dispersal_community <- function(dispersal, coords, seed = 1) {
   set.seed(seed)
-  # Latent patchiness shared by all species, scaled by dispersal strength:
+  # Latent patchiness shared by all species, scaled by dispersal strength.
+  # Everything else, including beta, is held fixed.
   field <- drop(spatial_field(coords))
-  Z <- dispersal * outer(field, rep(1, n_sp))
-  logit_p <- cbind(1, X) %*% rbind(beta0,
-                                   matrix(rnorm(3 * n_sp), 3, n_sp))
-  matrix(rbinom(nrow(X) * n_sp, 1, plogis(logit_p + Z)),
-         nrow(X), n_sp)
+  Zd <- dispersal * outer(field, rep(1, n_species))
+  matrix(rbinom(n_sites * n_species, 1, plogis(logit_p + Zd)),
+         n_sites, n_species)
 }
 
 coords <- matrix(runif(n_sites * 2), n_sites, 2)
 SP     <- generateSpatialEV(coords)
+dim(SP)                       # 63 eigenvectors: too many to fit blindly
+SP10 <- SP[, 1:10]            # leading MEMs only
 
-fit_spatial <- function(Y_comm) {
-  m <- sjSDM(
-    Y = Y_comm,
-    env = linear(data = X),
-    spatial = linear(data = SP, formula = ~ 0 + .),
-    family = binomial("logit"),
-    iter = 100, seed = 1, verbose = FALSE
-  )
-  summary(anova(m))
+fit_with_space <- function(Y_comm) {
+  sjSDM(Y = Y_comm, env = linear(data = X),
+        spatial = linear(data = SP10, formula = ~ 0 + .),
+        biotic = bioticStruct(df = 5), family = binomial("logit"),
+        iter = 100, seed = 1, verbose = FALSE)
 }
 
-part_weak   <- fit_spatial(simulate_dispersal_community(0.2, coords, n_species))
-part_strong <- fit_spatial(simulate_dispersal_community(1.5, coords, n_species))
+fit_without_space <- function(Y_comm) {
+  sjSDM(Y = Y_comm, env = linear(data = X),
+        biotic = bioticStruct(df = 5), family = binomial("logit"),
+        iter = 100, sampling = 100, seed = 1, verbose = FALSE)
+}
 
-rbind(
-  weak_dispersal_limitation   = part_weak[, "R2 Nagelkerke"],
-  strong_dispersal_limitation = part_strong[, "R2 Nagelkerke"]
+Y_disp <- lapply(c(weak = 0.2, strong = 2.0),
+                 function(d) simulate_dispersal_community(d, coords))
+
+disp_tab <- rbind(
+  `weak dispersal limitation`   = partition_of(fit_with_space(Y_disp$weak)),
+  `strong dispersal limitation` = partition_of(fit_with_space(Y_disp$strong))
 )
+
+knitr::kable(disp_tab, digits = 3,
+             caption = "Dispersal limitation, spatial component fitted")
 ```
 
-The spatial component of the partition should grow markedly under strong dispersal limitation, while the pure-environment component stays similar -- the signal is spatial structure *beyond* what the environment explains.
+The spatial component grows markedly under strong dispersal limitation, from roughly 0.39 to 0.81. Two other numbers matter as much. The environmental component barely moves, from about 0.92 to 0.84, because the true `beta` was held fixed. And the association component stays essentially flat, near 0.19 in both rows: with somewhere legitimate to put the spatial signal, the model puts it there and leaves the residual associations alone.
+
+Now drop the spatial term and refit exactly the same data.
+
+```{r dispersal-nospace}
+m_ns <- lapply(Y_disp, fit_without_space)
+
+mean_abs_cor <- function(m) {
+  C <- getCor(m)
+  mean(abs(C[upper.tri(C)]))
+}
+
+nospace_tab <- cbind(
+  t(sapply(m_ns, partition_of)),
+  `mean |correlation|` = sapply(m_ns, mean_abs_cor)
+)
+rownames(nospace_tab) <- c("weak, no spatial term", "strong, no spatial term")
+
+knitr::kable(nospace_tab, digits = 3,
+             caption = "Same data, spatial component omitted")
+```
+
+```{r dispersal-plot, fig.width=8, fig.height=3.8}
+op <- par(mfrow = c(1, 2), mar = c(4, 4.2, 2.6, 1))
+partition_barplot(disp_tab, c("Abiotic", "Spatial", "Associations"),
+                  "Spatial component fitted", labels = c("weak", "strong"))
+
+assoc_cmp <- rbind(
+  weak   = c(`with spatial term` = disp_tab[1, "Associations"],
+             `without`           = nospace_tab[1, "Associations"]),
+  strong = c(`with spatial term` = disp_tab[2, "Associations"],
+             `without`           = nospace_tab[2, "Associations"])
+)
+partition_barplot(assoc_cmp, colnames(assoc_cmp),
+                  "Association component only")
+par(op)
+```
+
+This is the point of the section. With no spatial term the dispersal signal does not disappear; it moves into the residual associations. `Associations` rises from about 0.15 to about 0.58, and the mean absolute species correlation rises from about 0.16 to about 0.55. Compare that with the flat 0.19 in the previous table, on exactly the same data, from a model that was given somewhere else to put the signal.
+
+Nothing generated those correlations except a smooth spatial field shared by all species. There is no interaction anywhere in the simulation.
+
+An analyst who fitted only the non-spatial model, saw a mean absolute correlation of 0.55, and concluded that the community shows strong biotic structuring would be wrong, and nothing in the model output would say so. Fit space whenever you have coordinates, even when space is not your question.
 
 ## Do fits detect environmental filtering?
 
-Here, stronger environmental filtering means that occurrence responds more strongly to the measured environmental gradients. We hold everything else fixed and scale the true environmental coefficients. The stronger-filtering community should assign more explained deviance to the environmental component.
+Here, stronger environmental filtering means occurrence responds more strongly to the measured gradients. We hold everything else fixed and scale the true environmental coefficients, so the truth changes in exactly one direction.
 
 ```{r filtering}
 simulate_filtered_community <- function(beta_scale, seed = 1) {
   set.seed(seed)
   Sig <- matrix(0.1, n_species, n_species); diag(Sig) <- 1
-  logit_p_f <- cbind(1, X) %*% rbind(beta0,
-                                     beta_scale * beta)
+  lp <- cbind(1, X) %*% rbind(beta0, beta_scale * beta)
   Zf <- mvtnorm::rmvnorm(n_sites, sigma = Sig)
-  matrix(rbinom(n_sites * n_species, 1, plogis(logit_p_f + Zf)),
+  matrix(rbinom(n_sites * n_species, 1, plogis(lp + Zf)),
          n_sites, n_species)
 }
 
 fit_plain <- function(Y_comm) {
-  m <- sjSDM(
-    Y = Y_comm,
-    env = linear(data = X),
-    biotic = bioticStruct(df = 5),
-    family = binomial("logit"),
-    iter = 100, sampling = 100, seed = 1, verbose = FALSE
-  )
-  summary(anova(m))
+  sjSDM(Y = Y_comm, env = linear(data = X),
+        biotic = bioticStruct(df = 5), family = binomial("logit"),
+        iter = 100, sampling = 100, seed = 1, verbose = FALSE)
 }
 
-part_weak_filter   <- fit_plain(simulate_filtered_community(0.25))
-part_strong_filter <- fit_plain(simulate_filtered_community(2.0))
+filt_scales <- c(0.25, 1.0, 2.0)
+filt_tab <- t(sapply(filt_scales,
+                     function(s) partition_of(fit_plain(simulate_filtered_community(s)))))
+rownames(filt_tab) <- paste0("beta x ", filt_scales)
+filt_tab <- cbind(filt_tab, `true beta scale` = filt_scales)
 
-rbind(
-  weak_environmental_filtering   = part_weak_filter[, "R2 Nagelkerke"],
-  strong_environmental_filtering = part_strong_filter[, "R2 Nagelkerke"]
-)
+knitr::kable(filt_tab, digits = 3,
+             caption = "Environmental filtering: variation partitioning")
 ```
 
-Under strong filtering you should see both a larger total $R^2$ and a partition dominated by the environment-only component. When filtering is weak, the residual association component can absorb more of the unexplained structure. Association estimates can represent omitted environmental or spatial structure as well as genuine biotic interactions.
+```{r filtering-plot, fig.width=8, fig.height=3.8}
+op <- par(mfrow = c(1, 2), mar = c(4, 4.2, 2.6, 1))
+partition_barplot(filt_tab, c("Abiotic", "Associations"),
+                  "Increasing environmental filtering")
+matplot(filt_scales, filt_tab[, c("Abiotic", "Associations", "Full")],
+        type = "b", pch = 19, lty = 1, log = "x",
+        col = grDevices::hcl.colors(3, "Dark 3"),
+        xlab = "true coefficient scale", ylab = "R2 (Nagelkerke)",
+        main = "Partition vs filtering strength")
+legend("bottomright", c("Abiotic", "Associations", "Full"),
+       col = grDevices::hcl.colors(3, "Dark 3"), lty = 1, pch = 19,
+       bty = "n", cex = 0.8)
+par(op)
+```
+
+Under strong filtering you should see both a larger total $R^2$ and a partition dominated by the environment-only component. When filtering is weak the residual association component absorbs more of the unexplained structure, which is the same conflation problem stated from the other direction.
+
+## What these tests cannot tell you
+
+Each contrast above changes one thing and shows the model responds to it. That is a *necessary* condition for inference, not a sufficient one. Three limits are worth stating plainly.
+
+- **The tests are calibrated on data generated by the model being fitted.** Real data are not, and recovery on real data will be worse than anything shown here.
+- **They compare two known conditions.** In a real dataset you have one condition and no truth, so you can report that the association component is large but not that it is larger than it should be.
+- **They do not identify the cause.** The dispersal section deliberately produces a strong `Associations` signal from a process that is not an interaction. Nothing in the output distinguishes the two; only the design of the covariate set does.
 
 # Prediction and model fit
 
@@ -406,9 +764,11 @@ predict(fit, newdata = newdata)
 Rsquared(fit)               # Nagelkerke-style R^2 for the joint model
 ```
 
+Interpret this $R^2$ as a relative measure across models fitted to the same data, not as an absolute goodness-of-fit. Binary responses cap the achievable value well below 1, and the simulated data above give roughly 0.2 even though the model is correctly specified.
+
 # Variation partitioning (ANOVA)
 
-`anova()` refits reduced models (environment-only, associations-only) and decomposes explained deviance. This is slower than fitting the full model because of the refits.
+`anova()` refits reduced models (environment-only, associations-only, and space-only when a spatial component is present) and decomposes explained deviance. This is slower than fitting the full model because of the refits.
 
 ```{r anova}
 av <- anova(fit)
@@ -416,6 +776,15 @@ av
 summary(av)                 # includes Nagelkerke R^2 per component
 plot(av)                    # barplot of the partition
 ```
+
+Reading the partition:
+
+- **Abiotic** is deviance explained by the environmental predictors.
+- **Spatial** appears only when the model has a spatial component, and is deviance explained by the spatial eigenvectors.
+- **Associations** is deviance explained by the residual covariance, that is, structure the other components missed.
+- **Full** is the joint model. Components do not sum to `Full`, because they share explained deviance; that shared fraction is the point of partitioning.
+
+A large `Associations` value is a prompt to ask what covariate is missing, not a finding about interactions.
 
 For a spatial model, `internalStructure()` further splits the association component into local and spatially structured parts, and `plotAssemblyEffects()` visualizes species responses along gradients.
 
@@ -426,7 +795,7 @@ Use `sjSDM_cv()` to tune regularization strength. Two important details:
 - It takes **raw data**, not a fitted model.
 - The tuning argument is `tune_steps`, not `IT`.
 
-```{r cv}
+```{r cv, eval=FALSE}
 options(sjSDM.dev = here::here("sjSDM"))
 
 cv <- sjSDM_cv(
@@ -459,14 +828,16 @@ fit_sp <- sjSDM(
   iter = 100, seed = 1, verbose = FALSE
 )
 
-anova(fit_sp)   # partitions deviance: environment | space | associations
+anova(fit_sp)   # partitions deviance into environment, space, associations
 ```
+
+Fit the spatial component whenever you have coordinates, even if space is not your question. Omitting it does not remove spatial structure from the data; it moves that structure into the residual associations, where it is easy to misread as biotic signal.
 
 # Standard errors and plots
 
 `plot(fit)` draws coefficient estimates with error bars. Computing the error bars requires per-species Hessians, which is the most expensive post-fitting step -- request SEs once with `se = TRUE`, or let `plot()` trigger `getSe()`.
 
-```{r se-plot}
+```{r se-plot, eval=FALSE}
 fit_se <- sjSDM(Y = Y, env = linear(data = X),
                 biotic = bioticStruct(df = 5),
                 family = binomial("logit"),
@@ -480,9 +851,11 @@ p_coef <- plot(fit_se)      # ggplot2 coefficient plot
 p_coef
 ```
 
+Standard errors always use PyTorch, because the Hessian needs second-order automatic differentiation that the Mojo kernel does not provide.
+
 Assembly-effect diagnostics for a spatial ANOVA:
 
-```{r assembly}
+```{r assembly, eval=FALSE}
 intstr <- internalStructure(anova(fit_sp))
 plotAssemblyEffects(intstr)
 ```
@@ -512,16 +885,16 @@ Run each backend more than once for a serious benchmark and report the distribut
 
 # Troubleshooting
 
-| Symptom | Fix |
-|----|----|
-| `is_torch_available()` is FALSE | Run `reticulate::py_config()`. Most often `RETICULATE_PYTHON` points nowhere or was set after Python started. Set it before loading sjSDM and restart R. |
-| Mojo backend seems ignored | Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3. If Python is already active, switch with `set_sjsdm_backend()` or restart R. |
-| Large Mojo fit gives suspect results | In v0.2.0, check whether `sampling * step_size * biotic_rank` exceeds 262,144. Use PyTorch or set Python's `SJSDM_MOJO_SEED_TRANSPORT=0` until the generator is fixed. |
-| `dtype = "float64"` fails in auto mode | v0.2.0 does not apply the documented auto fallback for float64. Use `dtype = "float32"` with Mojo or force PyTorch. |
-| Fit diverges to a constant loss | Unstandardized predictors. Use `scale(env)`. Affects both backends equally. |
-| `torch.randn` dimension errors | Fixed in this repository; make sure workers load the patched code (`options(sjSDM.dev = ...)` in parallel CV). |
-| Want GPU (Apple MPS)? | `options(sjSDM.device = "mps")`; note the Mojo backend is CPU-only, so MPS fits fall back to torch. |
-| pixi or build step fails | Confirm you are inside `work/mojo-backend/` when running `pixi` commands; `pixi run mojo` must resolve the Mojo standard library through the pixi environment. |
+- **`is_torch_available()` is FALSE.** Run `reticulate::py_config()`. Most often `RETICULATE_PYTHON` points nowhere or was set after Python started. Set it before loading sjSDM and restart R.
+- **Mojo backend seems ignored.** Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3. If Python is already active, switch with `set_sjsdm_backend()` or restart R.
+- **Large Mojo fit gives suspect results.** In v0.2.0, check whether `sampling * step_size * biotic_rank` exceeds 262,144. Use PyTorch or set Python's `SJSDM_MOJO_SEED_TRANSPORT=0` until the generator is fixed.
+- **`dtype = "float64"` fails in auto mode.** v0.2.0 does not apply the documented auto fallback for float64. Use `dtype = "float32"` with Mojo or force PyTorch.
+- **Fit diverges to a constant loss.** Unstandardized predictors. Use `scale(env)`. Affects both backends equally.
+- **`torch.randn` dimension errors.** Fixed in this repository; make sure workers load the patched code (`options(sjSDM.dev = ...)` in parallel CV).
+- **Want GPU (Apple MPS)?** `options(sjSDM.device = "mps")`; note the Mojo backend is CPU-only, so MPS fits fall back to torch.
+- **pixi or build step fails.** Confirm you are inside `work/mojo-backend/` when running `pixi` commands; `pixi run mojo` must resolve the Mojo standard library through the pixi environment.
+- **Partition columns come out unnamed.** Extracting a column from `summary(anova(m))` drops the component names. Use `setNames(av[, "R2 Nagelkerke"], rownames(av))`, as in the `partition_of()` helper above.
+- **Estimated correlations are much smaller than expected.** This is shrinkage, not a failure; see the association recovery section. Compare across models rather than against an absolute value.
 
 # Where to go next
 
@@ -530,3 +903,5 @@ Run each backend more than once for a serious benchmark and report the distribut
 - Mojo kernel sources and validation harness: `work/mojo-backend/mojo/` and `Feasibility_study.md`.
 - Upgrading Mojo/MAX versions: see the "Maintaining the Mojo/MAX pin" section of [Code/README.md](README.md).
 - Original sjSDM paper: Pichler & Hartig (2021), *A new method for faster and more accurate joint species distribution modelling* (Methods in Ecology & Evolution).
+- On the interpretation of residual associations: Poggiato et al. (2021), *On the interpretations of joint modeling in community ecology* (Trends in Ecology & Evolution); Blanchet et al. (2020), *Co-occurrence is not evidence of ecological interactions* (Ecology Letters).
+- Alternative jSDM implementations worth knowing: HMSC (Bayesian, richer trait and phylogeny structure, slower) and boral (latent variable models with a similar factorisation).
