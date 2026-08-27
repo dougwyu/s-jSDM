@@ -95,13 +95,18 @@ def main() raises:
 
     var hbuf = alloc[UInt8](HEADER_BYTES)
     var seedbuf = alloc[UInt8](8)
-    # Reusable buffers: training uses constant shapes per run, so these
-    # allocate once. A shape change reallocates (the old block is
-    # reclaimed when the process exits; acceptable for this prototype).
-    # Keyed on the FULL shape — keying on any single dimension (e.g.
-    # sites) reuses stale/undersized buffers when only species or rank
-    # changes between requests in one process.
-    var cap_shape: Int = -1
+    # Reusable buffers grow independently to the high-water capacity
+    # required by requests handled by this worker.
+    var cap_mu = 0
+    var cap_sigma = 0
+    var cap_y = 0
+    var cap_noise = 0
+    var cap_out = 0
+    var cap_gmu = 0
+    var cap_gsigma_buf = 0
+    var cap_gsigma = 0
+    var cap_zbuf_all = 0
+    var cap_llbuf_all = 0
     var mu = alloc[Float32](0)
     var sigma = alloc[Float32](0)
     var y = alloc[Float32](0)
@@ -127,21 +132,54 @@ def main() raises:
         var alpha = h.unsafe_ptr().unsafe_bitcast[Float32]()[8]
         var mode = h.unsafe_ptr().unsafe_bitcast[UInt32]()[9]
 
-        # shape fingerprint; each dimension < 2^13 keeps this exact
-        var shape_key = (((sites * 8192) + species) * 8192 + rank) * 8192 + samples
-        if shape_key != cap_shape:
-            cap_shape = shape_key
-            mu = alloc[Float32](sites * species)
-            sigma = alloc[Float32](species * rank)
-            y = alloc[Float32](sites * species)
-            noise = alloc[Float32](samples * sites * rank)
-            out = alloc[Float32](sites)
-            gmu = alloc[Float32](sites * species)
-            gsigma_buf = alloc[Float32](N_CHUNKS * species * rank)
-            gsigma = alloc[Float32](species * rank)
-            var chunk = (sites + N_CHUNKS - 1) // N_CHUNKS
-            zbuf_all = alloc[Float32](N_CHUNKS * chunk * samples * species)
-            llbuf_all = alloc[Float32](N_CHUNKS * chunk * samples)
+        var n_mu = sites * species
+        var n_sigma = species * rank
+        var n_noise = samples * sites * rank
+        var n_out = sites
+        var n_gsigma_buf = N_CHUNKS * species * rank
+        var n_zbuf_all = N_CHUNKS * samples * species
+        var n_llbuf_all = N_CHUNKS * samples
+
+        if n_mu > cap_mu:
+            mu.unsafe_free()
+            mu = alloc[Float32](n_mu)
+            cap_mu = n_mu
+        if n_sigma > cap_sigma:
+            sigma.unsafe_free()
+            sigma = alloc[Float32](n_sigma)
+            cap_sigma = n_sigma
+        if n_mu > cap_y:
+            y.unsafe_free()
+            y = alloc[Float32](n_mu)
+            cap_y = n_mu
+        if n_noise > cap_noise:
+            noise.unsafe_free()
+            noise = alloc[Float32](n_noise)
+            cap_noise = n_noise
+        if n_out > cap_out:
+            out.unsafe_free()
+            out = alloc[Float32](n_out)
+            cap_out = n_out
+        if n_mu > cap_gmu:
+            gmu.unsafe_free()
+            gmu = alloc[Float32](n_mu)
+            cap_gmu = n_mu
+        if n_gsigma_buf > cap_gsigma_buf:
+            gsigma_buf.unsafe_free()
+            gsigma_buf = alloc[Float32](n_gsigma_buf)
+            cap_gsigma_buf = n_gsigma_buf
+        if n_sigma > cap_gsigma:
+            gsigma.unsafe_free()
+            gsigma = alloc[Float32](n_sigma)
+            cap_gsigma = n_sigma
+        if n_zbuf_all > cap_zbuf_all:
+            zbuf_all.unsafe_free()
+            zbuf_all = alloc[Float32](n_zbuf_all)
+            cap_zbuf_all = n_zbuf_all
+        if n_llbuf_all > cap_llbuf_all:
+            llbuf_all.unsafe_free()
+            llbuf_all = alloc[Float32](n_llbuf_all)
+            cap_llbuf_all = n_llbuf_all
 
         if not read_exact(sin, mu.bitcast[UInt8](), sites * species * 4):
             break
@@ -177,16 +215,16 @@ def main() raises:
             # Per-chunk scratch: cached z_ks = alpha*(noise_k . sigma_s + mu_i)
             # and per-sample log-likelihoods ll_ik, so the noise dot products
             # are computed exactly once per site (was three times).
-            var zbuf = zbuf_all + cid * chunk * samples * species
-            var llbuf = llbuf_all + cid * chunk * samples
+            var zbuf = zbuf_all + cid * samples * species
+            var llbuf = llbuf_all + cid * samples
 
             comptime W: Int = 4
             # rank split into a SIMD-full part and a scalar remainder;
             # recomputed once per site (constant across k and s)
             var sfull = species - (species % W)
             for site in range(start, stop):
-                var zbase = (site - start) * samples * species
-                var llbase = (site - start) * samples
+                var zbase = 0
+                var llbase = 0
                 var full = rank - (rank % W)
 
                 # Pass 1a: dot products once, cache z
@@ -289,3 +327,16 @@ def main() raises:
         sout.write_bytes(Span[UInt8](unsafe_ptr=out.bitcast[UInt8](), length=sites * 4))
         sout.write_bytes(Span[UInt8](unsafe_ptr=gmu.bitcast[UInt8](), length=sites * species * 4))
         sout.write_bytes(Span[UInt8](unsafe_ptr=gsigma.bitcast[UInt8](), length=species * rank * 4))
+
+    hbuf.unsafe_free()
+    seedbuf.unsafe_free()
+    mu.unsafe_free()
+    sigma.unsafe_free()
+    y.unsafe_free()
+    noise.unsafe_free()
+    out.unsafe_free()
+    gmu.unsafe_free()
+    gsigma_buf.unsafe_free()
+    gsigma.unsafe_free()
+    zbuf_all.unsafe_free()
+    llbuf_all.unsafe_free()

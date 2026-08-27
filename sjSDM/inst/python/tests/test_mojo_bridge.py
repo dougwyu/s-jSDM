@@ -119,7 +119,20 @@ class TestPersistentProtocol:
 
 class TestMixedShapeRequests:
     """One worker process must handle shape changes safely: buffers are
-    keyed on the full shape fingerprint, not single dimensions."""
+    capacity-managed independently rather than keyed by a fingerprint."""
+
+    def test_historical_packed_shape_collision(self):
+        mu1, sigma1, y1, _ = make_case(1, 1, 2, 1, seed=71)
+        mu2, sigma2, y2, _ = make_case(1, 1, 1, 8193, seed=73)
+
+        run_worker_seed(mu1, sigma1, y1, 1, 101)
+        collided = run_worker_seed(mu2, sigma2, y2, 8193, 103)
+
+        mojo_bridge._WORKER.close()
+        fresh = run_worker_seed(mu2, sigma2, y2, 8193, 103)
+
+        for left, right in zip(collided, fresh):
+            np.testing.assert_allclose(left, right, atol=1e-4, rtol=1e-5)
 
     def test_shape_change_at_same_sites(self):
         # Regression: species change at constant sites once reused stale
