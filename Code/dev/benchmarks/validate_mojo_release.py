@@ -42,10 +42,11 @@ def check_cross_binary_bytes(baseline, candidate):
     for index, shape in enumerate(((8, 7, 3, 11), (256, 20, 5, 25))):
         before = explicit_result(baseline, shape, 300 + index)
         after = explicit_result(candidate, shape, 300 + index)
-        assert all(
+        if not all(
             left.tobytes() == right.tobytes()
             for left, right in zip(before, after)
-        ), f"response bytes changed at shape {shape}"
+        ):
+            raise RuntimeError(f"response bytes changed at shape {shape}")
 
 
 def check_numerical(candidate):
@@ -73,9 +74,12 @@ def check_numerical(candidate):
             gsigma.reshape(sigma.shape) - sigma_ref.grad.numpy()
         ))),
     }
-    assert errors["loss"] <= 1e-4, errors
-    assert errors["gmu"] <= 1e-4, errors
-    assert errors["gsigma"] <= 5e-4, errors
+    if not errors["loss"] <= 1e-4:
+        raise RuntimeError(f"loss error exceeded tolerance: {errors}")
+    if not errors["gmu"] <= 1e-4:
+        raise RuntimeError(f"gmu error exceeded tolerance: {errors}")
+    if not errors["gsigma"] <= 5e-4:
+        raise RuntimeError(f"gsigma error exceeded tolerance: {errors}")
     return errors
 
 
@@ -103,7 +107,8 @@ def check_memory(candidate):
         growth = rss_mib(proc) - start
     finally:
         proc.close()
-    assert growth < 4.0, f"post-warm-up RSS grew {growth:.2f} MiB"
+    if not growth < 4.0:
+        raise RuntimeError(f"post-warm-up RSS grew {growth:.2f} MiB")
 
     proc = worker(candidate)
     try:
@@ -113,7 +118,8 @@ def check_memory(candidate):
         absolute = rss_mib(proc)
     finally:
         proc.close()
-    assert absolute < 40.0, f"heavy-shape RSS was {absolute:.2f} MiB"
+    if not absolute < 40.0:
+        raise RuntimeError(f"heavy-shape RSS was {absolute:.2f} MiB")
     return {"growth_mib": growth, "heavy_mib": absolute}
 
 
