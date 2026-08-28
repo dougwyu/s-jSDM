@@ -1,3 +1,7 @@
+---
+output: github_document
+---
+
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
 [![Project Status: Active – The project has reached a stable, usable
@@ -155,6 +159,11 @@ Sys.setenv(SJSDM_MOJO_BACKEND = "auto")  # default: Mojo when available
 Sys.setenv(SJSDM_MOJO_BACKEND = "0")     # force pure PyTorch
 Sys.setenv(SJSDM_MOJO_BACKEND = "1")     # force Mojo (error if missing)
 ```
+
+Auto mode falls back to PyTorch for the entire operation when the dtype is
+float64 or any response is missing.
+
+> **v0.2.0 safety note:** The v0.2.0 tag has a 262,144-value seed-generation ceiling and collision-prone mixed-shape buffer reuse. Both are fixed on the current development branch. Tagged-release users should keep `sampling * step_size * biotic_rank <= 262144`, use PyTorch, or disable seed transport until a corrected release is available.
 
 Standard errors / Hessians always use PyTorch regardless of the setting.
 

@@ -5,6 +5,11 @@ Format loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Fill every server-side noise value for requests above 262,144 elements.
+- Replace packed shape fingerprints with independently capacity-managed buffers and free replaced/final allocations.
+- Reuse one z/ll scratch slot per concurrent chunk, reducing heavy-shape worker RSS by roughly 76% on the validation machine without changing response bytes.
+- Reject malformed protocol requests before transport/allocation, restore one-shot autograd, and make auto dtype/missing-data fallback operation-wide.
+
 ## [0.2.0] - 2026-08-22
 
 Release title: **Mojo CPU acceleration**.
