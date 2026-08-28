@@ -50,8 +50,6 @@ Two practical consequences follow immediately.
 - **Species with few records borrow strength.** A rare species with 12 occurrences gets a badly determined coefficient on its own. In a joint model its latent factor loadings are estimated using the co-occurrence pattern it shares with better-sampled species, which stabilises the fit.
 - **Predictions become conditional.** With a joint model you can ask "given that species A is present here, how likely is species B?" A stacked model cannot answer that question, because it has already assumed the answer is "no different from usual".
 
-Claude: provide a worked example of factoring a user x movie matrix (N X M -\> N X K \* K X M), where the K are interpretable latent variables that provide information on the user movie preferences and movie content groups. make the analogy to
-
 ## A worked example: users, movies, and hidden dimensions
 
 Before the notation, here is the same idea in a setting with no ecology in it. Everything in this subsection is plain base R and runs in a fraction of a second, so step through it if the algebra below is unfamiliar.
