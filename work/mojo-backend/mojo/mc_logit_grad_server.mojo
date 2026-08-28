@@ -89,6 +89,20 @@ def read_exact(mut sin: FileDescriptor, ptr: Pointer[UInt8, MutUntrackedOrigin],
     return True
 
 
+def checked_mul(a: Int, b: Int) raises -> Int:
+    # Construct the 64-bit signed maximum using verified Mojo 1.0.0-compatible
+    # operations, avoiding compiler-sensitive maximum constants and literals.
+    var max_int = Int(1) << 62
+    max_int -= 1
+    max_int *= 2
+    max_int += 1
+    if a > max_int // b:
+        var serr = FileDescriptor(2)
+        serr.write_string("invalid request header: dimension product overflow\n")
+        raise Error("invalid request header: dimension product overflow")
+    return a * b
+
+
 def main() raises:
     var sin = stdin
     var sout = stdout
@@ -132,13 +146,29 @@ def main() raises:
         var alpha = h.unsafe_ptr().unsafe_bitcast[Float32]()[8]
         var mode = h.unsafe_ptr().unsafe_bitcast[UInt32]()[9]
 
-        var n_mu = sites * species
-        var n_sigma = species * rank
-        var n_noise = samples * sites * rank
+        if sites < 1 or species < 1 or rank < 1 or samples < 1:
+            var serr = FileDescriptor(2)
+            serr.write_string("invalid request header: dimensions must be positive\n")
+            raise Error("invalid request header: dimensions must be positive")
+        if mode != 0 and mode != 1:
+            var serr = FileDescriptor(2)
+            serr.write_string("invalid request header: mode must be 0 or 1\n")
+            raise Error("invalid request header: mode must be 0 or 1")
+
+        var n_mu = checked_mul(sites, species)
+        var n_sigma = checked_mul(species, rank)
+        var n_noise_sample = checked_mul(sites, rank)
+        var n_noise = checked_mul(samples, n_noise_sample)
         var n_out = sites
-        var n_gsigma_buf = N_CHUNKS * species * rank
-        var n_zbuf_all = N_CHUNKS * samples * species
-        var n_llbuf_all = N_CHUNKS * samples
+        var n_gsigma_buf = checked_mul(N_CHUNKS, n_sigma)
+        var n_zbuf = checked_mul(samples, species)
+        var n_zbuf_all = checked_mul(N_CHUNKS, n_zbuf)
+        var n_llbuf_all = checked_mul(N_CHUNKS, samples)
+
+        var n_mu_bytes = checked_mul(n_mu, 4)
+        var n_sigma_bytes = checked_mul(n_sigma, 4)
+        var n_noise_bytes = checked_mul(n_noise, 4)
+        var n_out_bytes = checked_mul(n_out, 4)
 
         if n_mu > cap_mu:
             mu.unsafe_free()
@@ -181,27 +211,27 @@ def main() raises:
             llbuf_all = alloc[Float32](n_llbuf_all)
             cap_llbuf_all = n_llbuf_all
 
-        if not read_exact(sin, mu.bitcast[UInt8](), sites * species * 4):
+        if not read_exact(sin, mu.bitcast[UInt8](), n_mu_bytes):
             break
-        if not read_exact(sin, sigma.bitcast[UInt8](), species * rank * 4):
+        if not read_exact(sin, sigma.bitcast[UInt8](), n_sigma_bytes):
             break
-        if not read_exact(sin, y.bitcast[UInt8](), sites * species * 4):
+        if not read_exact(sin, y.bitcast[UInt8](), n_mu_bytes):
             break
         if mode == 1:
             # seed transport: 8-byte seed, server generates the noise
             if not read_exact(sin, seedbuf, 8):
                 break
             var seed = Span[UInt8](unsafe_ptr=seedbuf, length=8).unsafe_ptr().unsafe_bitcast[UInt64]()[0]
-            gen_noise(noise, samples * sites * rank, seed)
-        elif not read_exact(sin, noise.bitcast[UInt8](), samples * sites * rank * 4):
+            gen_noise(noise, n_noise, seed)
+        elif not read_exact(sin, noise.bitcast[UInt8](), n_noise_bytes):
             break
 
         comptime N_CHUNKS = 16
 
         # alloc does not zero-initialize
-        for i in range(sites * species):
+        for i in range(n_mu):
             gmu[i] = 0.0
-        for i in range(N_CHUNKS * species * rank):
+        for i in range(n_gsigma_buf):
             gsigma_buf[i] = 0.0
 
         var chunk = (sites + N_CHUNKS - 1) // N_CHUNKS
@@ -210,12 +240,12 @@ def main() raises:
         def chunk_loss(cid: Int):
             var start = cid * chunk
             var stop = min(start + chunk, sites)
-            var my_gsigma = cid * species * rank
+            var my_gsigma = cid * n_sigma
 
             # Per-chunk scratch: cached z_ks = alpha*(noise_k . sigma_s + mu_i)
             # and per-sample log-likelihoods ll_ik, so the noise dot products
             # are computed exactly once per site (was three times).
-            var zbuf = zbuf_all + cid * samples * species
+            var zbuf = zbuf_all + cid * n_zbuf
             var llbuf = llbuf_all + cid * samples
 
             comptime W: Int = 4
@@ -229,7 +259,7 @@ def main() raises:
 
                 # Pass 1a: dot products once, cache z
                 for k in range(samples):
-                    var nz_base = k * sites * rank + site * rank
+                    var nz_base = k * n_noise_sample + site * rank
                     for s in range(species):
                         var dot: Float32 = 0.0
                         for d in range(0, full, W):
@@ -282,7 +312,7 @@ def main() raises:
                     # softmax over MC samples; sums to 1, so no extra 1/K here
                     # (the 1/K inside log(mean(...)) cancels in the derivative)
                     var w = exp(llbuf[llbase + k] - max_ll) * inv_run
-                    var nz_base = k * sites * rank + site * rank
+                    var nz_base = k * n_noise_sample + site * rank
                     wv = SIMD[DType.float32, W](w)
                     for s in range(0, sfull, W):
                         var zv = (zbuf + zbase + k * species + s).load[W]()
@@ -321,12 +351,12 @@ def main() raises:
             for d in range(rank):
                 var acc: Float32 = 0.0
                 for c in range(N_CHUNKS):
-                    acc += gsigma_buf[c * species * rank + s * rank + d]
+                    acc += gsigma_buf[c * n_sigma + s * rank + d]
                 gsigma[s * rank + d] = acc
 
-        sout.write_bytes(Span[UInt8](unsafe_ptr=out.bitcast[UInt8](), length=sites * 4))
-        sout.write_bytes(Span[UInt8](unsafe_ptr=gmu.bitcast[UInt8](), length=sites * species * 4))
-        sout.write_bytes(Span[UInt8](unsafe_ptr=gsigma.bitcast[UInt8](), length=species * rank * 4))
+        sout.write_bytes(Span[UInt8](unsafe_ptr=out.bitcast[UInt8](), length=n_out_bytes))
+        sout.write_bytes(Span[UInt8](unsafe_ptr=gmu.bitcast[UInt8](), length=n_mu_bytes))
+        sout.write_bytes(Span[UInt8](unsafe_ptr=gsigma.bitcast[UInt8](), length=n_sigma_bytes))
 
     hbuf.unsafe_free()
     seedbuf.unsafe_free()

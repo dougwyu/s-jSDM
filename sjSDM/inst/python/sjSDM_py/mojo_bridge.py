@@ -38,6 +38,46 @@ _REPO_ROOT = os.path.abspath(
 )
 
 
+class _RequestValidationError(RuntimeError):
+    """A local request is invalid; restarting the worker cannot fix it."""
+
+
+def _positive_integer(value, name):
+    try:
+        converted = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _RequestValidationError(
+            f"Mojo request {name} must be a positive integer."
+        ) from exc
+    if converted <= 0 or converted != value:
+        raise _RequestValidationError(
+            f"Mojo request {name} must be a positive integer."
+        )
+    return converted
+
+
+def _validate_tensor(name, tensor, expected_shape):
+    if not isinstance(tensor, torch.Tensor):
+        raise _RequestValidationError(f"Mojo request {name} must be a tensor.")
+    if tensor.device.type != "cpu" or tensor.dtype != torch.float32:
+        raise _RequestValidationError(
+            f"Mojo request {name} must be a CPU float32 tensor."
+        )
+    if tuple(tensor.shape) != tuple(expected_shape):
+        raise _RequestValidationError(
+            f"Mojo request {name} has shape {tuple(tensor.shape)}; "
+            f"expected {tuple(expected_shape)}."
+        )
+    array = tensor.detach().numpy()
+    expected_bytes = int(np.prod(expected_shape, dtype=np.int64)) * 4
+    if array.nbytes != expected_bytes:
+        raise _RequestValidationError(
+            f"Mojo request {name} has {array.nbytes} bytes; "
+            f"expected {expected_bytes}."
+        )
+    return array
+
+
 def _server_path() -> str:
     return os.environ.get(
         "SJSDM_MOJO_SERVER_BIN",
@@ -88,8 +128,25 @@ class _PersistentWorker:
         return self._request(mu, sigma, y, samples, alpha, seed=seed)
 
     def _request(self, mu, sigma, y, samples, alpha, noise_tensor=None, seed=None):
+        samples = _positive_integer(samples, "sampling")
+        if not isinstance(mu, torch.Tensor) or mu.ndim != 2:
+            raise _RequestValidationError("Mojo request mu must be a rank-2 tensor.")
+        if not isinstance(sigma, torch.Tensor) or sigma.ndim != 2:
+            raise _RequestValidationError("Mojo request sigma must be a rank-2 tensor.")
         sites, species = mu.shape
         rank = sigma.shape[1]
+        if sites < 1 or species < 1 or rank < 1:
+            raise _RequestValidationError(
+                "Mojo request dimensions must be positive."
+            )
+        mu_array = _validate_tensor("mu", mu, (sites, species))
+        sigma_array = _validate_tensor("sigma", sigma, (species, rank))
+        y_array = _validate_tensor("y", y, (sites, species))
+        noise_array = None
+        if noise_tensor is not None:
+            noise_array = _validate_tensor(
+                "noise", noise_tensor, (samples, sites, rank)
+            )
         if self.proc is None or self.proc.poll() is not None:
             self._start()
         header = struct.pack("<qqqq", sites, species, rank, samples)
@@ -99,13 +156,13 @@ class _PersistentWorker:
         if noise_tensor is not None:
             header += struct.pack("<I", 0)  # mode 0: noise payload
             tail = b"".join(
-                arr.detach().numpy().tobytes()
-                for arr in (mu, sigma, y, noise_tensor)
+                arr.tobytes()
+                for arr in (mu_array, sigma_array, y_array, noise_array)
             )
         else:
             header += struct.pack("<I", 1)  # mode 1: server-side RNG
             tail = b"".join(
-                arr.detach().numpy().tobytes() for arr in (mu, sigma, y)
+                arr.tobytes() for arr in (mu_array, sigma_array, y_array)
             ) + struct.pack("<Q", int(seed))
         payload = header + tail
         n_out = sites * 4
@@ -215,6 +272,8 @@ class _MojoLogitMCLoss(torch.autograd.Function):
                       lambda: _run_oneshot(mu, sigma, y, noise, alpha))
         try:
             out, gmu, gsigma = runner()
+        except _RequestValidationError:
+            raise
         except (RuntimeError, BrokenPipeError, subprocess.CalledProcessError):
             if not persistent:
                 raise
@@ -268,11 +327,25 @@ def mojo_logit_loss(mu, Ys, sigma, sampling, alpha):
     generates the standard normals itself. Set SJSDM_MOJO_SEED_TRANSPORT=0
     for the legacy explicit-noise transport.
     """
-    if mu.device.type != "cpu" or mu.dtype != torch.float32:
-        raise RuntimeError("Mojo backend requires CPU float32 tensors.")
+    sampling = _positive_integer(sampling, "sampling")
+    if not isinstance(mu, torch.Tensor) or mu.ndim != 2:
+        raise _RequestValidationError("Mojo request mu must be a rank-2 tensor.")
+    if not isinstance(sigma, torch.Tensor) or sigma.ndim != 2:
+        raise _RequestValidationError("Mojo request sigma must be a rank-2 tensor.")
+    sites, species = mu.shape
+    rank = sigma.shape[1]
+    if sites < 1 or species < 1 or rank < 1:
+        raise _RequestValidationError(
+            "Mojo request dimensions must be positive."
+        )
+    _validate_tensor("mu", mu, (sites, species))
+    _validate_tensor("sigma", sigma, (species, rank))
+    _validate_tensor("y", Ys, (sites, species))
     if torch.isnan(Ys).any():
         raise RuntimeError(
             "Mojo backend does not support NaN responses; "
             "unset SJSDM_MOJO_BACKEND for this data."
         )
-    return _MojoLogitMCLoss.apply(mu, sigma, Ys.contiguous(), int(sampling), float(alpha))
+    return _MojoLogitMCLoss.apply(
+        mu, sigma, Ys.contiguous(), sampling, float(alpha)
+    )

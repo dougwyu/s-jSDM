@@ -8,6 +8,7 @@ command).
 """
 
 import os
+import struct
 import subprocess
 
 import numpy as np
@@ -66,6 +67,119 @@ def run_worker_seed(mu, sigma, y, samples, seed):
     sites, species = mu.shape
     rank = sigma.shape[1]
     return loss, gmu.reshape(sites, species), gsigma.reshape(species, rank)
+
+
+class _NeverWrite:
+    def write(self, _payload):
+        pytest.fail("invalid request reached stdin.write")
+
+    def flush(self):
+        pytest.fail("invalid request reached stdin.flush")
+
+
+class _NoIOProcess:
+    stdin = _NeverWrite()
+
+    def poll(self):
+        return None
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["mu_dtype", "sigma_dtype", "y_dtype", "sigma_shape", "y_shape",
+     "noise_dtype", "noise_shape"],
+)
+def test_invalid_payload_is_rejected_before_write(field):
+    mu, sigma, y, noise = make_case(8, 4, 2, 5, seed=79)
+    if field == "mu_dtype":
+        mu = mu.double()
+    elif field == "sigma_dtype":
+        sigma = sigma.double()
+    elif field == "y_dtype":
+        y = y.double()
+    elif field == "sigma_shape":
+        sigma = torch.zeros((5, 2), dtype=torch.float32)
+    elif field == "y_shape":
+        y = torch.zeros((7, 4), dtype=torch.float32)
+    elif field == "noise_dtype":
+        noise = noise.double()
+    else:
+        noise = torch.zeros((5, 8, 3), dtype=torch.float32)
+
+    worker = mojo_bridge._PersistentWorker()
+    worker.proc = _NoIOProcess()
+    with pytest.raises(RuntimeError, match="Mojo request"):
+        worker.run(mu, sigma, y, noise, 1.0)
+
+
+@pytest.mark.parametrize("sampling", [0, -1, 1.5])
+def test_public_loss_rejects_invalid_sampling(monkeypatch, sampling):
+    mu, sigma, y, _ = make_case(8, 4, 2, 5, seed=83)
+    monkeypatch.setattr(
+        mojo_bridge._MojoLogitMCLoss,
+        "apply",
+        lambda *args: pytest.fail("invalid sampling reached autograd apply"),
+    )
+    with pytest.raises(RuntimeError, match="positive integer"):
+        mojo_bridge.mojo_logit_loss(mu, y, sigma, sampling, 1.0)
+
+
+@pytest.mark.parametrize("field", ["sigma_dtype", "y_dtype", "sigma_shape", "y_shape"])
+def test_public_loss_validates_every_model_tensor(monkeypatch, field):
+    mu, sigma, y, _ = make_case(8, 4, 2, 5, seed=87)
+    if field == "sigma_dtype":
+        sigma = sigma.double()
+    elif field == "y_dtype":
+        y = y.double()
+    elif field == "sigma_shape":
+        sigma = torch.zeros((5, 2), dtype=torch.float32)
+    else:
+        y = torch.zeros((7, 4), dtype=torch.float32)
+    monkeypatch.setattr(
+        mojo_bridge._MojoLogitMCLoss,
+        "apply",
+        lambda *args: pytest.fail("invalid tensor reached autograd apply"),
+    )
+    with pytest.raises(RuntimeError, match="Mojo request"):
+        mojo_bridge.mojo_logit_loss(mu, y, sigma, 5, 1.0)
+
+
+def test_request_validation_error_is_not_retried(monkeypatch):
+    mu, sigma, y, noise = make_case(8, 4, 2, 5, seed=89)
+    calls = 0
+    monkeypatch.setenv("SJSDM_MOJO_PERSISTENT", "1")
+
+    def reject(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise mojo_bridge._RequestValidationError("Mojo request rejected")
+
+    monkeypatch.setattr(mojo_bridge._WORKER, "run", reject)
+    with pytest.raises(mojo_bridge._RequestValidationError):
+        mojo_bridge._MojoLogitMCLoss.apply(mu, sigma, y, noise, 1.0)
+    assert calls == 1
+
+
+def _raw_server_request(header, body=b""):
+    return subprocess.run(
+        [SERVER_BIN], input=header + body, capture_output=True, timeout=5
+    )
+
+
+@pytest.mark.parametrize(
+    ("header", "body"),
+    [
+        (struct.pack("<qqqqfI", 0, 1, 1, 1, 1.0, 1),
+         np.zeros(1, dtype=np.float32).tobytes() + struct.pack("<Q", 1)),
+        (struct.pack("<qqqqfI", 1, 1, 1, 1, 1.0, 9),
+         np.zeros(4, dtype=np.float32).tobytes()),
+        (struct.pack("<qqqqfI", 2**62, 4, 1, 1, 1.0, 1), b""),
+    ],
+)
+def test_server_rejects_invalid_header(header, body):
+    result = _raw_server_request(header, body)
+    assert result.returncode != 0
+    assert b"invalid request header" in result.stderr
 
 
 class TestPersistentProtocol:
