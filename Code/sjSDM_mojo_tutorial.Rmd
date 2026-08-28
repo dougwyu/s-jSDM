@@ -377,7 +377,7 @@ set_sjsdm_backend("auto")
 
 Auto mode selects Mojo only for CPU float32 logit/probit operations when the worker exists and the complete response matrix has no missing values. CPU float64 and operations with missing responses use PyTorch for the whole operation. Forced Mojo mode remains strict and reports unsupported inputs.
 
-> **Release note:** The tagged v0.2.0 worker generates at most 262,144 noise values safely and uses a collision-prone packed shape key. The current development branch fixes both defects. With the v0.2.0 tag, address the seed-generation defect by requiring `sampling * step_size * biotic_rank <= 262144` or disabling seed transport. Neither measure prevents the separate mixed-shape buffer collision: use PyTorch to avoid that risk, or restart the tagged worker (normally by restarting R) before any request whose shape differs from the preceding request. If you build from the current branch, run the release-safety validation in `Code/README.md` before relying on larger requests.
+> **Release note:** The tagged v0.2.0 worker generates at most 262,144 noise values safely and uses a collision-prone packed shape key. Release v0.2.1 fixes both defects. With the v0.2.0 tag, address the seed-generation defect by requiring `sampling * step_size * biotic_rank <= 262144` or disabling seed transport. Neither measure prevents the separate mixed-shape buffer collision: use PyTorch to avoid that risk, or restart the tagged worker (normally by restarting R) before any request whose shape differs from the preceding request. If you build from source, run the release-safety validation in `Code/README.md` before relying on larger requests.
 
 ## When does Mojo help?
 
@@ -1020,8 +1020,8 @@ Run each backend more than once for a serious benchmark and report the distribut
 
 - **`is_torch_available()` is FALSE.** Run `reticulate::py_config()`. Most often `RETICULATE_PYTHON` points nowhere or was set after Python started. Set it before loading sjSDM and restart R.
 - **Mojo backend seems ignored.** Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3. If Python is already active, switch with `set_sjsdm_backend()` or restart R.
-- **Large or shape-changing Mojo fit gives suspect results.** This is v0.2.0-tag behavior, fixed on the current development branch. For the seed-generation defect, keep `sampling * step_size * biotic_rank <= 262144` or set Python's `SJSDM_MOJO_SEED_TRANSPORT=0`. Neither measure prevents the separate mixed-shape buffer collision: use PyTorch, or restart the tagged worker/R session before any request whose shape differs from the preceding request.
-- **`dtype = "float64"` fails in auto mode.** This is v0.2.0-tag behavior, fixed on the current development branch. With the tag, use `dtype = "float32"` with Mojo or force PyTorch.
+- **Large or shape-changing Mojo fit gives suspect results.** This is v0.2.0-tag behavior, fixed in v0.2.1. For the seed-generation defect, keep `sampling * step_size * biotic_rank <= 262144` or set Python's `SJSDM_MOJO_SEED_TRANSPORT=0`. Neither measure prevents the separate mixed-shape buffer collision: use PyTorch, or restart the tagged worker/R session before any request whose shape differs from the preceding request.
+- **`dtype = "float64"` fails in auto mode.** This is v0.2.0-tag behavior, fixed in v0.2.1. With the tag, use `dtype = "float32"` with Mojo or force PyTorch.
 - **Fit diverges to a constant loss.** Unstandardized predictors. Use `scale(env)`. Affects both backends equally.
 - **`torch.randn` dimension errors.** Fixed in this repository; make sure workers load the patched code (`options(sjSDM.dev = ...)` in parallel CV).
 - **Want GPU (Apple MPS)?** `options(sjSDM.device = "mps")`; note the Mojo backend is CPU-only, so MPS fits fall back to torch.

@@ -3,7 +3,7 @@
 All notable changes to the sjSDM package are documented here.
 Format loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.2.1] - 2026-08-28
 
 - Fill every server-side noise value for requests above 262,144 elements.
 - Replace packed shape fingerprints with independently capacity-managed buffers and free replaced/final allocations.

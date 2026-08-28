@@ -170,8 +170,7 @@ is float64 or any response is missing.
 
 > **v0.2.0 safety note:** The v0.2.0 tag has a 262,144-value
 > seed-generation ceiling and collision-prone mixed-shape buffer reuse.
-> Both are fixed on the current development branch. For the tagged
-> release’s seed-generation defect, keep
+> Both are fixed in v0.2.1. For the v0.2.0 seed-generation defect, keep
 > `sampling * step_size * biotic_rank <= 262144` or disable seed
 > transport. Neither measure prevents the separate mixed-shape buffer
 > collision: use PyTorch to avoid that risk, or restart the tagged
