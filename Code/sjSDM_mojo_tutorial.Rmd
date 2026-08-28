@@ -50,6 +50,136 @@ Two practical consequences follow immediately.
 - **Species with few records borrow strength.** A rare species with 12 occurrences gets a badly determined coefficient on its own. In a joint model its latent factor loadings are estimated using the co-occurrence pattern it shares with better-sampled species, which stabilises the fit.
 - **Predictions become conditional.** With a joint model you can ask "given that species A is present here, how likely is species B?" A stacked model cannot answer that question, because it has already assumed the answer is "no different from usual".
 
+Claude: provide a worked example of factoring a user x movie matrix (N X M -\> N X K \* K X M), where the K are interpretable latent variables that provide information on the user movie preferences and movie content groups. make the analogy to
+
+## A worked example: users, movies, and hidden dimensions
+
+Before the notation, here is the same idea in a setting with no ecology in it. Everything in this subsection is plain base R and runs in a fraction of a second, so step through it if the algebra below is unfamiliar.
+
+Imagine a streaming service with a table of how much each user enjoyed each film. Six users, five films, so a 6 by 5 table. Nobody believes those 30 numbers are 30 unrelated facts. What is really going on is that films sit somewhere on a few *content dimensions*, users have *tastes* along those same dimensions, and a rating is high when the two line up. Suppose there are just two dimensions, action and romance.
+
+### Step 1: the factorisation
+
+Give each film a pair of content scores, and each user a pair of taste scores.
+
+```{r movies-build}
+V <- rbind(                                    # films x dimensions (5 x 2)
+  "Die Hard"       = c(action = 1.0, romance = 0.0),
+  "Mad Max"        = c(0.9, 0.1),
+  "Mr & Mrs Smith" = c(0.6, 0.6),
+  "Love Actually"  = c(0.1, 0.9),
+  "Notting Hill"   = c(0.0, 1.0)
+)
+
+U <- rbind(                                    # users x dimensions (6 x 2)
+  Ana  = c(action = 1.5, romance = 0.0),
+  Ben  = c(1.2, 0.2),
+  Cara = c(1.0, 1.0),
+  Dan  = c(0.2, 1.3),
+  Eve  = c(0.0, 1.5),
+  Femi = c(0.3, 0.3)
+)
+
+R <- U %*% t(V)                                # (6 x 2) (2 x 5) = 6 x 5
+round(R, 2)
+```
+
+That is the whole trick, written as $\mathbf{R} = \mathbf{U}\mathbf{V}^\top$, with shapes $(N \times M) = (N \times K)(K \times M)$ where $N = 6$ users, $M = 5$ films, $K = 2$ dimensions.
+
+Check one cell by hand. Cara is `(1.0, 1.0)`, a fan of both. "Mr & Mrs Smith" is `(0.6, 0.6)`, half action and half romance. Their rating is the dot product of the two vectors: `1.0 * 0.6 + 1.0 * 0.6 = 1.2`. Every cell of `R` is one such dot product, which is all that `%*%` is doing. Ana, pure action at `(1.5, 0.0)`, scores 1.5 on "Die Hard" and exactly 0 on "Notting Hill", because her taste vector has no overlap with that film's content.
+
+### Step 2: why bother
+
+The 6 by 5 table has 30 entries but only two independent directions in it.
+
+```{r movies-rank}
+round(svd(R)$d, 3)     # only two non-zero singular values
+qr(R)$rank
+```
+
+Three of the five singular values are zero, so the table is *rank 2*: every column is a mixture of the same two underlying patterns. That is the payoff. Instead of $N \times M$ free numbers you store $K(N + M)$. At a realistic size, 1,000 users by 500 films is 500,000 cells, while $K = 10$ needs 15,000 loadings. The ecological version of that arithmetic is the one in the next section: 200 species have 20,100 free covariance entries, but only 1,000 loadings at $d = 5$.
+
+### Step 3: the loadings are not identified, but their cross-product is
+
+This step is the one most worth understanding, because it decides what you are allowed to interpret.
+
+Take any rotation of the two dimensions and apply it to films and users alike. The individual loadings all change. The ratings do not.
+
+```{r movies-rotation}
+theta <- pi / 6
+Q <- matrix(c(cos(theta), sin(theta), -sin(theta), cos(theta)), 2, 2)   # a rotation
+
+V2 <- V %*% Q          # rotated film loadings
+U2 <- U %*% Q          # rotated user tastes
+
+rbind(original = V["Die Hard", ], rotated = V2["Die Hard", ])
+max(abs(U2 %*% t(V2) - R))          # ratings unchanged
+max(abs(V2 %*% t(V2) - V %*% t(V))) # film-by-film similarity unchanged
+```
+
+"Die Hard" moves from `(1.0, 0.0)` to `(0.866, -0.5)`, and the axis you were calling "action" is no longer the action axis. Yet both reconstructions agree to machine precision. So the names "action" and "romance" were never estimated from data; we imposed them. Any statement of the form "dimension 1 is action" is not supported by the fit.
+
+What survives rotation is the cross-product $\mathbf{V}\mathbf{V}^\top$, the film-by-film similarity matrix.
+
+```{r movies-similarity}
+round(V %*% t(V), 2)
+```
+
+Read it as a table of which films go together: "Die Hard" and "Mad Max" at 0.90, "Love Actually" and "Notting Hill" at 0.90, "Die Hard" and "Notting Hill" at 0.00, and "Mr & Mrs Smith" moderately similar to everything because it straddles both dimensions. **That matrix is the interpretable output, and the individual loadings are not.** Hold on to this; it is exactly why the recovery section later compares `getCor()` against a known correlation matrix and never compares loadings.
+
+### Step 4: adding covariates
+
+Some of a rating is explained by things you measured directly, with no hidden dimensions needed. Older users may prefer certain films. Put user attributes in a matrix `X` with one row per user, and let each film have its own response to them in `B`.
+
+```{r movies-covariates}
+age <- c(Ana = 19, Ben = 24, Cara = 31, Dan = 44, Eve = 52, Femi = 38)
+X <- cbind(intercept = 1, age = as.numeric(scale(age)))   # users x predictors (6 x 2)
+rownames(X) <- names(age)
+
+B <- rbind(                                               # predictors x films (2 x 5)
+  intercept = c(2.0, 2.0, 2.5, 2.5, 2.0),
+  age       = c(-0.4, -0.5, 0.0, 0.3, 0.4)
+)
+colnames(B) <- rownames(V)
+
+round(X %*% B + U %*% t(V), 2)      # measured part + latent part
+```
+
+The model is now $\mathbf{R} = \mathbf{X}\mathbf{B} + \mathbf{U}\mathbf{V}^\top$: a part explained by measured user attributes, plus a low-rank part for structure you did not measure. `B` is read column by column. "Die Hard" has an age slope of -0.4, so it loses appeal with age; "Notting Hill" gains at +0.4.
+
+Film attributes such as genre or budget are the mirror image, a matrix with one row per film. sjSDM's basic model has no argument for them; that is the "fourth corner" of trait-based models such as HMSC. Only the user-side covariates have a direct equivalent, which is the one thing to carry across.
+
+### Step 5: the same picture in ecology
+
+Swap the nouns and nothing else changes.
+
+- Users become **sites**. Films become **species**.
+- The ratings table becomes the site-by-species occurrence matrix `Y`.
+- User attributes become the **environmental predictors**, passed as `env = linear(data = X)`. Each species has its own response to them, which is `B` above and $\boldsymbol{\beta}$ below.
+- Film content scores become the **species loadings**, the matrix sjSDM calls `sigma`. You choose $K$ with `bioticStruct(df = K)`.
+- User taste scores become **site scores** on the same latent dimensions.
+- The film-by-film similarity $\mathbf{V}\mathbf{V}^\top$ becomes the **species association matrix**, returned by `getCov()` and `getCor()`.
+
+An unmeasured environmental gradient, say soil pH, plays the role of "action": it is a real dimension along which sites differ and species respond, you never measured it, and its fingerprint is a block of species that co-occur. That is the residual correlation, and the previous subsection's warning is just the observation that any such dimension will do, interaction or not.
+
+### Step 6: how sjSDM actually stores it
+
+Recommender-system write-ups almost always show $\mathbf{U}\mathbf{V}^\top$ with the second factor already transposed, as a $K \times M$ block. sjSDM does not store it that way, and two differences will otherwise trip you up when you look at the fitted object.
+
+**The loadings are kept untransposed.** The `sigma` matrix is species by $K$, the shape of `V` above and not of $\mathbf{V}^\top$. With `df = 5` and 10 species it is 10 by 5. So `getCov()` is computed as `sigma %*% t(sigma)`, matching `V %*% t(V)` in step 3 exactly, and the species-by-species result is what you interpret.
+
+**The site scores are never stored at all.** This is the real departure from a recommender. There, `U` is estimated, because predicting a rating requires knowing that specific user's taste. In sjSDM the site scores are not parameters: they are redrawn from a standard normal every time the likelihood is evaluated and averaged over, so the fit keeps `sigma` and nothing else. The line doing it in the PyTorch path is
+
+```{r movies-einsum, eval=FALSE}
+# sjSDM/inst/python/sjSDM_py/model_sjSDM.py
+noise = torch.randn(size = [sampling, batch_size, df])      # site scores, redrawn
+torch.einsum("ijk, lk -> ijl", [noise, sigma])              # noise %*% t(sigma)
+```
+
+where `noise` is samples by sites by $K$ and `sigma` is species by $K$. The einsum sums over the shared $K$ index, which is `U %*% t(V)` written for a stack of `sampling` draws at once.
+
+Two consequences follow, and both are cashed out below. Because the scores are standard normal, the only remaining freedom is an orthogonal rotation, exactly as in step 3, so $\boldsymbol{\Sigma}$ is identified even though the loadings are not. And because they are averaged over rather than estimated, the likelihood is an integral, which is where `sampling` and the whole Monte Carlo machinery come from.
+
 ## The model sjSDM fits
 
 For site $i$ and species $j$, sjSDM models the observed occurrence $y_{ij}$ as
