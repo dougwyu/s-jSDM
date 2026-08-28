@@ -267,9 +267,10 @@ class _MojoLogitMCLoss(torch.autograd.Function):
             if not explicit_noise:
                 noise = torch.randn(size=(int(sampling), int(batch), int(rank)),
                                     device=torch.device("cpu"), dtype=torch.float32)
-            runner = (lambda: _WORKER.run(mu, sigma, y, noise, alpha)
-                      if persistent else
-                      lambda: _run_oneshot(mu, sigma, y, noise, alpha))
+            if persistent:
+                runner = lambda: _WORKER.run(mu, sigma, y, noise, alpha)
+            else:
+                runner = lambda: _run_oneshot(mu, sigma, y, noise, alpha)
         try:
             out, gmu, gsigma = runner()
         except _RequestValidationError:

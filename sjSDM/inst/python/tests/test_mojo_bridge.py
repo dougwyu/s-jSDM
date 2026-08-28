@@ -416,3 +416,35 @@ class TestOneshotTransport:
         assert np.abs(loss_p - loss_o).max() < 1e-5
         assert np.abs(gmu_p - gmu_o).max() < 1e-5
         assert np.abs(gsig_p - gsig_o).max() < 1e-5
+
+    def test_public_oneshot_forward_and_backward(self, monkeypatch):
+        sites, species, rank, samples = 24, 8, 3, 16
+        mu, sigma, y, _ = make_case(sites, species, rank, samples, seed=97)
+
+        mu_one = mu.clone().requires_grad_(True)
+        sigma_one = sigma.clone().requires_grad_(True)
+        torch.manual_seed(101)
+        rng_state = torch.get_rng_state()
+        monkeypatch.setenv("SJSDM_MOJO_PERSISTENT", "0")
+        loss_one = mojo_bridge.mojo_logit_loss(
+            mu_one, y, sigma_one, samples, 1.0
+        )
+        loss_one.mean().backward()
+
+        torch.set_rng_state(rng_state)
+        noise = torch.randn(
+            (samples, sites, rank), device="cpu", dtype=torch.float32
+        )
+        mu_persistent = mu.clone().requires_grad_(True)
+        sigma_persistent = sigma.clone().requires_grad_(True)
+        monkeypatch.setenv("SJSDM_MOJO_PERSISTENT", "1")
+        loss_persistent = mojo_bridge._MojoLogitMCLoss.apply(
+            mu_persistent, sigma_persistent, y, noise, 1.0
+        )
+        loss_persistent.mean().backward()
+
+        assert torch.allclose(loss_one, loss_persistent, atol=1e-4)
+        assert torch.allclose(mu_one.grad, mu_persistent.grad, atol=1e-4)
+        assert torch.allclose(
+            sigma_one.grad, sigma_persistent.grad, atol=5e-4
+        )
