@@ -156,7 +156,7 @@ Important implementation lessons: externally supplied noise is required for dete
 
 The narrow autograd bridge is implemented:
 
-- `sjSDM/inst/python/sjSDM_py/mojo_bridge.py`: `torch.autograd.Function` that shells out to the prebuilt binary `work/mojo-backend/mc_grad_bin` (forward + analytic `mu`/`sigma` gradients). Noise is generated with `torch.randn` inside the bridge so RNG streams match the PyTorch path exactly under a fixed seed.
+- `sjSDM/inst/python/sjSDM_py/mojo_bridge.py`: `torch.autograd.Function` that shells out to the prebuilt binary `work/mojo-backend/mc_grad_bin` (forward + analytic `mu`/`sigma` gradients). The default persistent path sends a seed and generates noise in the server; explicit noise remains available for deterministic parity and the legacy transport path.
 - `mc_logit_grad.mojo` now accepts an optional trailing `alpha` argument (argv[12], default 1.0) so probit's 1.7012 scaling is supported; gradient parity re-passed after the change.
 - `Model_sjSDM._build_loss_function` uses the bridge for logit/probit links when `SJSDM_MOJO_BACKEND=1`. Restrictions: CPU float32 only, no NaN responses, and backward requires uniform grad_output (holds for `loss.mean()` in `fit()`).
 - Validation: `Code/dev/benchmarks/train_parity_mojo.py` shows bitwise-identical training trajectories over 30 epochs vs the PyTorch loss, plus end-to-end timing.

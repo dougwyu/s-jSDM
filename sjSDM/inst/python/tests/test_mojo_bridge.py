@@ -8,7 +8,6 @@ command).
 """
 
 import os
-import resource
 import struct
 import subprocess
 import sys
@@ -165,6 +164,11 @@ def test_request_validation_error_is_not_retried(monkeypatch):
 def _raw_server_request(header, body=b"", address_space_limit=None):
     preexec_fn = None
     if address_space_limit is not None:
+        try:
+            import resource
+        except ImportError:
+            pytest.skip("resource module unavailable; cannot limit address space")
+
         def limit_address_space():
             resource.setrlimit(
                 resource.RLIMIT_AS,

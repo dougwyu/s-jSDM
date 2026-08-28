@@ -247,10 +247,12 @@ def _run_oneshot(mu, sigma, y, noise, alpha):
 
 
 class _MojoLogitMCLoss(torch.autograd.Function):
-    """Per-site negative log-likelihood with externally supplied noise.
+    """Per-site negative log-likelihood using seeded worker noise by default.
 
-    Forward returns loss (batch,), backward propagates the kernel's
-    analytic d(sum_i L_i)/d(mu) and d(sum_i L_i)/d(sigma).
+    Persistent calls normally send a seed for server-side noise generation.
+    Explicit noise remains available for deterministic parity and legacy
+    transport. Forward returns loss (batch,), and backward propagates the
+    kernel's analytic d(sum_i L_i)/d(mu) and d(sum_i L_i)/d(sigma).
     """
 
     @staticmethod
