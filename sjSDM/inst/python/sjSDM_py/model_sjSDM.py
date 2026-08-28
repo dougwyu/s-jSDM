@@ -408,7 +408,8 @@ class Model_sjSDM:
             sampling (int, optional): Number of MC samples for each species. Defaults to 100.
             parallel (int, optional): Use parallelization for DataLoader. Defaults to 0.
             early_stopping_training (int, optional): Use early stopping or not. Defaults to -1.
-        """            
+        """
+        self._loss_function = self._loss_function_for_data(Y, train=True)
         stepSize = np.floor(X.shape[0] / batch_size).astype(int) # type: ignore
         dataLoader = self._get_DataLoader(X, Y, SP, batch_size, True, parallel)
         any_losses = len(self.losses) > 0
@@ -545,9 +546,11 @@ class Model_sjSDM:
 
         Returns:
             Tuple[float, float]: Tuple of log-Likelihood and regularization loss
-        """               
+        """
+        loss_function = self._loss_function_for_data(
+            Y, train=train, individual=individual
+        )
         dataLoader = self._get_DataLoader(X = X, Y = Y, SP=SP, batch_size = batch_size, shuffle = False, parallel = parallel, drop_last = False)
-        loss_function = self._build_loss_function(train=train, individual=individual)
         torch.cuda.empty_cache()
         any_losses = len(self.losses) > 0
 
@@ -881,6 +884,27 @@ class Model_sjSDM:
             if l2 > 0.0:
                 self.losses.append( lambda: self.l1_l2[1](self.sigma, l2) )
 
+    def _loss_function_for_data(
+        self,
+        Y: np.ndarray,
+        train: bool = True,
+        individual: bool = False,
+    ) -> Callable:
+        import os
+
+        has_missing = bool(np.isnan(Y).any())
+        mode = os.environ.get("SJSDM_MOJO_BACKEND", "auto").strip().lower()
+        binary_training = train and self.link in ("logit", "probit")
+        if binary_training and has_missing and mode == "1":
+            raise RuntimeError(
+                "SJSDM_MOJO_BACKEND=1 does not support missing responses."
+            )
+        return self._build_loss_function(
+            train=train,
+            individual=individual,
+            allow_mojo=not has_missing,
+        )
+
     def _build_loss_function(self, train: bool = True, raw: bool = False, individual:bool = False, simulate: bool = False, allow_mojo: bool = True) -> Callable:
         """Build loss (likelihood) function
 
@@ -933,7 +957,12 @@ class Model_sjSDM:
 
                 if allow_mojo and mode != "0":
                     use_mojo = (
-                        mode == "1" or (self.device.type == "cpu" and mojo_available())
+                        mode == "1"
+                        or (
+                            self.device.type == "cpu"
+                            and self.dtype == torch.float32
+                            and mojo_available()
+                        )
                     )
                     if mode == "1" and not mojo_available():
                         raise RuntimeError(
@@ -944,15 +973,7 @@ class Model_sjSDM:
                     if use_mojo:
                         def mojo_tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
                             return mojo_logit_loss(mu, Ys, sigma, sampling, alpha)
-                        if mode == "1":
-                            return mojo_tmp
-                        # auto mode: fall back to the torch loss when Y
-                        # contains NaNs (the Mojo kernel rejects them).
-                        def tmp(mu: torch.Tensor, Ys: torch.Tensor, sigma: torch.Tensor, batch_size: int, sampling: int, df: int, alpha: float, device: str, dtype: torch.dtype):
-                            if torch.isnan(Ys).any():
-                                return torch_tmp(mu, Ys, sigma, batch_size, sampling, df, alpha, device, dtype)
-                            return mojo_tmp(mu, Ys, sigma, batch_size, sampling, df, alpha, device, dtype)
-                        return tmp
+                        return mojo_tmp
 
                 # keep the generic `return tmp` below valid
                 tmp = torch_tmp

@@ -1,6 +1,16 @@
 import pytest
 from .. import sjSDM_py as fa
 import numpy as np
+import torch
+
+
+@pytest.fixture
+def preserve_default_dtype():
+    previous = torch.get_default_dtype()
+    try:
+        yield
+    finally:
+        torch.set_default_dtype(previous)
 
 @pytest.fixture
 def data():
@@ -17,15 +27,116 @@ def data_sp():
 
 @pytest.fixture
 def model_base():
-    def _get(inp=5,out=5,hidden=[], activation=['linear'],bias=[False], df=5, 
-             optimizer=fa.optimizer_adamax(1), l1_d = 0.0, l2_d = 0.0, 
-             l1_cov=0.0, l2_cov=0.0, link="logit",reg_on_Cov=True, reg_on_Diag=True,inverse=False, dropout=-99):
-        model = fa.Model_sjSDM()
+    def _get(inp=5,out=5,hidden=[], activation=['linear'],bias=[False], df=5,
+             optimizer=fa.optimizer_adamax(1), l1_d = 0.0, l2_d = 0.0,
+             l1_cov=0.0, l2_cov=0.0, link="logit",reg_on_Cov=True, reg_on_Diag=True,inverse=False, dropout=-99,
+             device="cpu", dtype="float32"):
+        model = fa.Model_sjSDM(device=device, dtype=dtype)
         model.add_env(input_shape=inp, output_shape=out, bias=bias,
                       hidden=hidden, activation=activation, l1=l1_d, l2=l2_d, dropout=dropout)
         model.build(df=df, l1=l1_cov,l2=l2_cov,optimizer=optimizer,link=link,reg_on_Cov=reg_on_Cov, reg_on_Diag=reg_on_Diag, inverse=inverse)
         return model
     return _get
+
+
+def test_auto_float64_uses_torch(
+    monkeypatch, model_base, preserve_default_dtype
+):
+    from ..sjSDM_py import mojo_bridge
+
+    monkeypatch.setenv("SJSDM_MOJO_BACKEND", "auto")
+    monkeypatch.setattr(mojo_bridge, "mojo_available", lambda: True)
+    monkeypatch.setattr(
+        mojo_bridge,
+        "mojo_logit_loss",
+        lambda *args: pytest.fail("float64 auto mode selected Mojo"),
+    )
+    model = model_base(inp=2, out=3, df=2, dtype="float64")
+    mu = torch.zeros((4, 3), dtype=torch.float64)
+    y = torch.zeros((4, 3), dtype=torch.float64)
+    loss = model._loss_function(
+        mu, y, model.sigma, 4, 5, 2, model.alpha, "cpu", model.dtype
+    )
+    assert loss.dtype == torch.float64
+
+
+def test_auto_float32_uses_mojo(
+    monkeypatch, model_base, preserve_default_dtype
+):
+    from ..sjSDM_py import mojo_bridge
+
+    calls = 0
+
+    def fake_mojo(mu, y, sigma, sampling, alpha):
+        nonlocal calls
+        calls += 1
+        return mu.sum(dim=1) * 0.0
+
+    monkeypatch.setenv("SJSDM_MOJO_BACKEND", "auto")
+    monkeypatch.setattr(mojo_bridge, "mojo_available", lambda: True)
+    monkeypatch.setattr(mojo_bridge, "mojo_logit_loss", fake_mojo)
+    model = model_base(inp=2, out=3, df=2, dtype="float32")
+    model._loss_function(
+        torch.zeros((4, 3)), torch.zeros((4, 3)), model.sigma,
+        4, 5, 2, model.alpha, "cpu", model.dtype,
+    )
+    assert calls == 1
+
+
+def test_forced_float64_reaches_strict_bridge_guard(
+    monkeypatch, model_base, preserve_default_dtype
+):
+    from ..sjSDM_py import mojo_bridge
+
+    monkeypatch.setenv("SJSDM_MOJO_BACKEND", "1")
+    monkeypatch.setattr(mojo_bridge, "mojo_available", lambda: True)
+    model = model_base(inp=2, out=3, df=2, dtype="float64")
+    with pytest.raises(RuntimeError, match="CPU float32"):
+        model._loss_function(
+            torch.zeros((4, 3), dtype=torch.float64),
+            torch.zeros((4, 3), dtype=torch.float64),
+            model.sigma, 4, 5, 2, model.alpha, "cpu", model.dtype,
+        )
+
+
+def test_auto_missing_data_never_calls_mojo(
+    monkeypatch, data, model_base, preserve_default_dtype
+):
+    from ..sjSDM_py import mojo_bridge
+
+    monkeypatch.setenv("SJSDM_MOJO_BACKEND", "auto")
+    monkeypatch.setattr(mojo_bridge, "mojo_available", lambda: True)
+    monkeypatch.setattr(
+        mojo_bridge,
+        "mojo_logit_loss",
+        lambda *args: pytest.fail("one batch selected Mojo in a missing-data fit"),
+    )
+    X, Y = data(a=2, b=3, c=20)
+    Y = Y.astype(float)
+    Y[0, 0] = np.nan
+    model = model_base(inp=2, out=3, df=2)
+    model.fit(X, Y, epochs=1, batch_size=10, verbose=False)
+    model.logLik(X, Y, batch_size=10)
+
+
+def test_forced_missing_data_fails_before_dataloader(
+    monkeypatch, data, model_base, preserve_default_dtype
+):
+    from ..sjSDM_py import mojo_bridge
+
+    monkeypatch.setenv("SJSDM_MOJO_BACKEND", "1")
+    monkeypatch.setattr(mojo_bridge, "mojo_available", lambda: True)
+    X, Y = data(a=2, b=3, c=20)
+    Y = Y.astype(float)
+    Y[0, 0] = np.nan
+    model = model_base(inp=2, out=3, df=2)
+    monkeypatch.setattr(
+        model,
+        "_get_DataLoader",
+        lambda *args, **kwargs: pytest.fail("DataLoader constructed before guard"),
+    )
+    with pytest.raises(RuntimeError, match="missing responses"):
+        model.fit(X, Y, epochs=1, batch_size=10, verbose=False)
 
 @pytest.fixture
 def model_base_sp():
