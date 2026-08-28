@@ -31,6 +31,19 @@ Scripts used during development of the Mojo port. Not needed to use the
 package.
 
 - `benchmarks/` -- PyTorch CPU/MPS baselines and Mojo shape-grid benchmarks.
+- `dev/benchmarks/validate_mojo_release.py` -- target-machine release checks
+  for cross-binary response bytes, explicit-noise numerical accuracy, and
+  worker RSS. Run from the repository root with:
+
+  ```bash
+  work/mojo-backend/.pixi/envs/default/bin/python \
+    Code/dev/benchmarks/validate_mojo_release.py \
+    --baseline-server /private/tmp/sjsdm-mojo-v0.2.0-server \
+    --candidate-server work/mojo-backend/mc_grad_server_bin
+  ```
+
+  The absolute RSS gate is calibrated for the target Apple Silicon machine;
+  it is a target-machine release check, not a portable unit test.
 - `bench_realdata.R`, `bench_real_occurrence.R` -- end-to-end R-level
   timing on simulated and bundled real datasets.
 - `test_cv.R`, `test_plots.R`, `test_randn.R`, `trace_rng.R`,
