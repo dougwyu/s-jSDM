@@ -23,9 +23,9 @@
 #   dz includes the alpha factor; sites split into N_CHUNKS chunks with
 #   private per-chunk sigma-gradient buffers merged afterwards.
 #
-# Seed mode generates N(0,1) draws as box_muller(splitmix64(seed ^ idx)),
-# one independent stream element per noise entry, so generation can be
-# parallelized without inter-chunk dependencies.
+# Seed mode generates N(0,1) draws with the Marsaglia polar method from
+# splitmix64(seed ^ idx), one independent stream element per noise entry,
+# so generation can be parallelized without inter-chunk dependencies.
 
 from max.algorithm import parallelize
 from std.io import FileDescriptor
@@ -169,6 +169,11 @@ def main() raises:
         var n_sigma_bytes = checked_mul(n_sigma, 4)
         var n_noise_bytes = checked_mul(n_noise, 4)
         var n_out_bytes = checked_mul(n_out, 4)
+        # Validate the Float32 byte sizes of allocation-only scratch buffers,
+        # even though alloc itself consumes their element counts.
+        var _n_gsigma_buf_bytes = checked_mul(n_gsigma_buf, 4)
+        var _n_zbuf_all_bytes = checked_mul(n_zbuf_all, 4)
+        var _n_llbuf_all_bytes = checked_mul(n_llbuf_all, 4)
 
         if n_mu > cap_mu:
             mu.unsafe_free()

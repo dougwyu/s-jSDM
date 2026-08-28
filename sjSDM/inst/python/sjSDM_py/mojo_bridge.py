@@ -17,8 +17,9 @@ Limitations (deliberate, until further validation):
 - Y must not contain NaNs (the masked-loss path stays in PyTorch).
 - The backward pass assumes grad_output is constant across sites, which
   holds for the training path (`loss.mean()`) but not for weighted losses.
-- External noise is supplied by torch.randn so RNG streams match the
-  PyTorch path exactly under a fixed seed.
+- Persistent mode defaults to server-side standard normals from a transported
+  seed and the Marsaglia polar method. `SJSDM_MOJO_SEED_TRANSPORT=0` retains
+  explicit PyTorch noise transport for parity checks and legacy operation.
 
 Binary locations can be overridden with SJSDM_MOJO_SERVER_BIN /
 SJSDM_MOJO_BIN.
@@ -95,8 +96,9 @@ def _oneshot_path() -> str:
 class _PersistentWorker:
     """Long-lived `mc_grad_server_bin` process speaking a raw pipe protocol.
 
-    Request: 36-byte header (Int64 sites/species/rank/samples + UInt32
-    alpha bits), then mu, sigma, y, noise as contiguous float32 bytes.
+    Request: 40-byte header (Int64 sites/species/rank/samples + UInt32 alpha
+    bits + UInt32 mode), then contiguous float32 mu, sigma, and y followed by
+    either explicit float32 noise (mode 0) or a UInt64 seed (mode 1).
     Response: loss, gmu, gsigma as contiguous float32 bytes.
     """
 
@@ -188,12 +190,22 @@ class _PersistentWorker:
         return out.copy(), gmu.copy(), gsigma.copy()
 
     def close(self):
-        if self.proc is not None and self.proc.poll() is None:
-            self.proc.stdin.close()
+        proc = self.proc
+        self.proc = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is not None:
+                return
+            proc.stdin.close()
             try:
-                self.proc.wait(timeout=5)
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
+                proc.kill()
+                proc.wait()
+        finally:
+            proc.stdin.close()
+            proc.stdout.close()
 
 
 _WORKER = _PersistentWorker()

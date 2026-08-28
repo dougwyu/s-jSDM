@@ -8,8 +8,10 @@ command).
 """
 
 import os
+import resource
 import struct
 import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -160,9 +162,19 @@ def test_request_validation_error_is_not_retried(monkeypatch):
     assert calls == 1
 
 
-def _raw_server_request(header, body=b""):
+def _raw_server_request(header, body=b"", address_space_limit=None):
+    preexec_fn = None
+    if address_space_limit is not None:
+        def limit_address_space():
+            resource.setrlimit(
+                resource.RLIMIT_AS,
+                (address_space_limit, address_space_limit),
+            )
+
+        preexec_fn = limit_address_space
     return subprocess.run(
-        [SERVER_BIN], input=header + body, capture_output=True, timeout=5
+        [SERVER_BIN], input=header + body, capture_output=True, timeout=5,
+        preexec_fn=preexec_fn,
     )
 
 
@@ -180,6 +192,54 @@ def test_server_rejects_invalid_header(header, body):
     result = _raw_server_request(header, body)
     assert result.returncode != 0
     assert b"invalid request header" in result.stderr
+
+
+def test_server_rejects_scratch_byte_overflow_before_allocation():
+    # Element counts and all request/response byte products fit in Int64.
+    # The first overflow is the 16-chunk gsigma scratch size in Float32 bytes.
+    header = struct.pack("<qqqqfI", 1, 1, 2**58, 1, 1.0, 1)
+    result = _raw_server_request(
+        header, address_space_limit=1024 * 1024 * 1024 * 1024
+    )
+    assert result.returncode != 0
+    assert b"invalid request header: dimension product overflow" in result.stderr
+
+
+def test_worker_close_clears_process_closes_streams_and_reaps_after_kill(
+    monkeypatch,
+):
+    worker = mojo_bridge._PersistentWorker()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    worker.proc = proc
+    real_wait = proc.wait
+    wait_timeouts = []
+
+    def force_first_wait_to_timeout(timeout=None):
+        wait_timeouts.append(timeout)
+        if len(wait_timeouts) == 1:
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        return real_wait(timeout)
+
+    monkeypatch.setattr(proc, "wait", force_first_wait_to_timeout)
+    try:
+        worker.close()
+        assert worker.proc is None
+        assert proc.stdin.closed
+        assert proc.stdout.closed
+        assert proc.returncode is not None
+        assert wait_timeouts == [5, None]
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        real_wait()
+        if not proc.stdin.closed:
+            proc.stdin.close()
+        if not proc.stdout.closed:
+            proc.stdout.close()
 
 
 class TestPersistentProtocol:
