@@ -58,7 +58,9 @@ This subsection needs no ecology and no linear algebra beyond multiplying two ma
 
 A streaming service keeps one row per viewer and one column per film. A cell holds 1 if that viewer liked the film, 0 if they did not, and `NA` if they never watched it. Fifteen viewers, twenty-five films, and here is a corner of it.
 
-```{r films-data, echo=FALSE}
+```{r films-data}
+# Scaffolding: the table is simulated, so we can check the answer later.
+# Skim this and move on; the problem starts below it.
 set.seed(3)
 viewers <- c("Ana","Ben","Cara","Dan","Eve","Femi","Gita","Hugo",
              "Iris","Jonas","Kemi","Lars","Mira","Noor","Omar")
@@ -87,7 +89,7 @@ ratings[1:8, c("Die Hard","Top Gun","Speed","Notting Hill",
 
 Only 207 of the 375 cells are filled in. The job is to fill an empty one: find a film a viewer has not seen that they would like. Here is what Ana has left.
 
-```{r films-ana-unseen, echo=FALSE}
+```{r films-ana-unseen}
 films[is.na(ratings["Ana", ])]
 ```
 
@@ -196,6 +198,8 @@ for (k in 1:3) cat(sprintf("axis %d: %s\n", k,
 
 Now read them off. Axis 1 is romance, axis 2 is arthouse, axis 3 is action. Nobody supplied a genre label, an actor, or a plot summary. The only input was a half-empty grid of ones and zeros.
 
+This is also the check that the method found real structure rather than an artefact. Look back at the scaffolding chunk: each film was assigned to a genre and given a position near 1 on that genre's dimension and near 0 on the others. The three recovered axes are the three genres that went in.
+
 The same three numbers describe the viewers, and now they can be read as taste.
 
 ```{r films-viewers}
@@ -208,20 +212,12 @@ Dan is a romance viewer and nothing else. Femi is there for action. Ana is high 
 
 One caution before moving on. It is the *set* of axes, or equivalently their cross-product, that the data pin down. Any particular axis is a convention you imposed by choosing varimax, so "axis 1 is romance" is a reading of this rotation, not a fact the fit established.
 
-### Where the matrix came from
-
-The ratings were simulated, so we can check the answer. Here is the code that was hidden at the top.
-
-```{r films-source, ref.label="films-data", eval=FALSE}
-```
-
-Each film was assigned to one of three genres, given a position near 1 on that genre's dimension and near 0 on the others, and each viewer was given three random taste scores. The probability of liking came from multiplying the two, and a coin flip turned it into 0 or 1. The recovered axes match the genres that went in, which is the check that the method found real structure rather than an artefact.
-
 ### The same matrix in ecology
 
 Now change the nouns and nothing else. Rows are survey sites, columns are species, and a cell is 1 if the species was recorded there and 0 if not.
 
-```{r birds-data, echo=FALSE}
+```{r birds-data}
+# Scaffolding again, built the same way as the ratings table.
 set.seed(11)
 sites <- c("Ashdown","Beckley","Cranmere","Dunwich","Elmsett","Foxholes",
            "Granborough","Hartop","Ickworth","Jurby","Kelling","Langmere",
@@ -278,11 +274,6 @@ Three consequences follow directly.
 - **Species that load on the same axis co-occur.** Turn the species loadings into a species-by-species matrix and you have exactly the **species association matrix** that sjSDM reports through `getCov()` and `getCor()`. It is the ecological version of "which films go together".
 - **A strong association is not evidence of interaction.** Nothing in this bird example involves species interacting. They share a habitat preference. That is the warning from the previous subsection, now visible as arithmetic: a missing covariate and a biotic interaction produce the same pattern.
 - **Measuring the gradient makes it go away.** Had we recorded habitat and put it in as a predictor, that structure would move out of the latent part and into the measured part. This is why a jSDM has both: $\mathbf{X}\boldsymbol{\beta}$ for what you measured, and a low-rank latent term for what you did not. Adding a covariate and watching an association shrink is the model working, not a contradiction.
-
-Here is the ecological data-generating code, for the same check as before.
-
-```{r birds-source, ref.label="birds-data", eval=FALSE}
-```
 
 ### How sjSDM stores it
 
