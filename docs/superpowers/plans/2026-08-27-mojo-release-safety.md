@@ -1,5 +1,7 @@
 # Mojo Release Safety Implementation Plan
 
+> **Superseded: this plan is complete. Do not execute it.** Every step was implemented and merged on `master` in `068f4ba..5a9671c` (2026-08-28). What was delivered is summarised in the `[Unreleased]` section of `CHANGELOG.md`; the governing design, including the five items deliberately not implemented, is `docs/superpowers/specs/2026-08-27-mojo-release-safety-design.md`. The unticked checkboxes below are the plan as originally written, kept as a historical record. They are not outstanding work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the Mojo backend correct and resource-safe for supported CPU float32 logit/probit fits, including large seeded requests, repeated shape changes, auto fallback, and one-shot transport.

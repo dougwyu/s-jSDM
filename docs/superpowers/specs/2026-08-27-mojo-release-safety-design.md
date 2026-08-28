@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-27
 
-**Status:** Proposed for implementation
+**Status:** Implemented and merged. Delivered on `master` in `068f4ba..5a9671c` (2026-08-28), summarised in the `[Unreleased]` section of `CHANGELOG.md`. Five items were deliberately not implemented; they are listed with their reasons under "Review outcomes" at the end, and the implementation plan recorded three of them as explicit non-goals. The plan itself, `docs/superpowers/plans/2026-08-27-mojo-release-safety.md`, is complete and superseded.
 
 **Revision:** 2026-08-27, revised after design review. Changes from the first draft are listed under "Review outcomes" at the end.
 
