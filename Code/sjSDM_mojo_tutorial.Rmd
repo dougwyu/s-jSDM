@@ -277,7 +277,7 @@ This tutorial covers the **Mojo-accelerated CPU build** of sjSDM, which currentl
 
 **If everything is already installed, jump to Step 4.**
 
-The Mojo backend lives alongside a project-local Python environment defined with [pixi](https://pixi.sh), a single-binary package manager. PyTorch 2.5.1, Mojo 1.0.0, and MAX 26.5.0 are the versions validated for v0.2.0. The ranges in `pixi.toml` are not an immutable lock, so commit a tested `pixi.lock` before relying on byte-for-byte reproducible installs.
+The Mojo backend lives alongside a project-local Python environment defined with [pixi](https://pixi.sh), a single-binary package manager. PyTorch 2.5.1, Mojo 1.0.0, and MAX 26.5.0 are the versions validated for v0.2.1. The ranges in `pixi.toml` are not an immutable lock, so commit a tested `pixi.lock` before relying on byte-for-byte reproducible installs.
 
 **Step 1 -- clone the repository:**
 
@@ -377,17 +377,15 @@ set_sjsdm_backend("auto")
 
 Auto mode selects Mojo only for CPU float32 logit/probit operations when the worker exists and the complete response matrix has no missing values. CPU float64 and operations with missing responses use PyTorch for the whole operation. Forced Mojo mode remains strict and reports unsupported inputs.
 
-> **Release note:** The tagged v0.2.0 worker generates at most 262,144 noise values safely and uses a collision-prone packed shape key. Release v0.2.1 fixes both defects. With the v0.2.0 tag, address the seed-generation defect by requiring `sampling * step_size * biotic_rank <= 262144` or disabling seed transport. Neither measure prevents the separate mixed-shape buffer collision: use PyTorch to avoid that risk, or restart the tagged worker (normally by restarting R) before any request whose shape differs from the preceding request. If you build from source, run the release-safety validation in `Code/README.md` before relying on larger requests.
-
 ## When does Mojo help?
 
-The historical v0.2.0 end-to-end benchmarks in this repo (`Code/dev/bench_realdata.R`) use `step_size = 10`, so they stay below that tag's seed-transport limit. They reported:
+Measured on v0.2.1 (2026-08-28, `-O 3` builds, clean workers):
 
-- About 1.9x end-to-end at 10,000 sites x 200 species.
-- About 1.3x at 3,000 sites x 60 species.
+- Faster in all 27 cells of the shape grid, from 1.69x to 3.14x.
+- About 1.75x end-to-end at 10,000 sites x 200 species, and 1.50x at 3,000 sites x 60 species.
 - Standard errors (`getSe`) always use PyTorch regardless of the setting, because Hessians need second-order autodiff.
 
-**Corrected development-build measurements (2026-08-28, `-O 3`, clean workers):** Mojo was faster in all 27 shape-grid cells, with speedups from 1.69x to 3.14x. Fresh end-to-end runs measured 1.75x at 10,000 sites x 200 species and 1.50x at 3,000 sites x 60 species. These development measurements do not replace the explicitly labelled v0.2.0 figures above.
+The v0.2.0 release reported 1.9x and 1.3x on those same two end-to-end workloads (`Code/dev/bench_realdata.R`, `step_size = 10`). Those figures come from a separate benchmarking run and are kept labelled by release rather than overwritten.
 
 Two caveats worth knowing:
 
@@ -1020,8 +1018,6 @@ Run each backend more than once for a serious benchmark and report the distribut
 
 - **`is_torch_available()` is FALSE.** Run `reticulate::py_config()`. Most often `RETICULATE_PYTHON` points nowhere or was set after Python started. Set it before loading sjSDM and restart R.
 - **Mojo backend seems ignored.** Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3. If Python is already active, switch with `set_sjsdm_backend()` or restart R.
-- **Large or shape-changing Mojo fit gives suspect results.** This is v0.2.0-tag behavior, fixed in v0.2.1. For the seed-generation defect, keep `sampling * step_size * biotic_rank <= 262144` or set Python's `SJSDM_MOJO_SEED_TRANSPORT=0`. Neither measure prevents the separate mixed-shape buffer collision: use PyTorch, or restart the tagged worker/R session before any request whose shape differs from the preceding request.
-- **`dtype = "float64"` fails in auto mode.** This is v0.2.0-tag behavior, fixed in v0.2.1. With the tag, use `dtype = "float32"` with Mojo or force PyTorch.
 - **Fit diverges to a constant loss.** Unstandardized predictors. Use `scale(env)`. Affects both backends equally.
 - **`torch.randn` dimension errors.** Fixed in this repository; make sure workers load the patched code (`options(sjSDM.dev = ...)` in parallel CV).
 - **Want GPU (Apple MPS)?** `options(sjSDM.device = "mps")`; note the Mojo backend is CPU-only, so MPS fits fall back to torch.
