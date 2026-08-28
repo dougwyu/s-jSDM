@@ -249,7 +249,7 @@ set_sjsdm_backend("auto")
 
 Auto mode selects Mojo only for CPU float32 logit/probit operations when the worker exists and the complete response matrix has no missing values. CPU float64 and operations with missing responses use PyTorch for the whole operation. Forced Mojo mode remains strict and reports unsupported inputs.
 
-> **Release note:** The tagged v0.2.0 worker generates at most 262,144 noise values safely and uses a collision-prone packed shape key. The current development branch fixes both defects. If you are using the v0.2.0 tag, require `sampling * step_size * biotic_rank <= 262144` or select PyTorch/explicit-noise transport; if you build from the current branch, run the release-safety validation in `Code/README.md` before relying on larger requests.
+> **Release note:** The tagged v0.2.0 worker generates at most 262,144 noise values safely and uses a collision-prone packed shape key. The current development branch fixes both defects. With the v0.2.0 tag, address the seed-generation defect by requiring `sampling * step_size * biotic_rank <= 262144` or disabling seed transport. Neither measure prevents the separate mixed-shape buffer collision: use PyTorch to avoid that risk, or restart the tagged worker (normally by restarting R) before any request whose shape differs from the preceding request. If you build from the current branch, run the release-safety validation in `Code/README.md` before relying on larger requests.
 
 ## When does Mojo help?
 
@@ -311,6 +311,8 @@ round(colMeans(Y), 3)
 
 Note that step 4 is the generative model from the concepts section, written out literally: a linear predictor, plus one draw of $\mathbf{e}_i$ per site from $\mathcal{N}(\mathbf{0}, \boldsymbol{\Sigma})$, pushed through the inverse logit, then a Bernoulli trial. If you can read that block, you can read the model.
 
+`Sigma` is positive definite and therefore full rank (rank 10 here). The fit below deliberately uses `df = 5`, so its association component is a rank-5 approximation to the truth rather than a correctly specified full-rank covariance model. That mirrors the regularized low-rank fits used in larger applications, but it also means the recovery check should preserve the guild pattern rather than reproduce every correlation magnitude.
+
 Alternatively, use sjSDM's own simulator. The predictor matrix is `env_weights`, the response matrix is `response`, and the truth includes `species_weights` and `correlation`:
 
 ```{r simulate-SDM, eval=FALSE}
@@ -328,7 +330,7 @@ The core function is `sjSDM()`. The three model components map directly to argum
 fit <- sjSDM(
   Y = Y,                                        # sites x species 0/1 matrix
   env = linear(data = X, formula = ~ temp + precip + elev),
-  biotic = bioticStruct(df = 5),                # rank-5 covariance factor
+  biotic = bioticStruct(df = 5),                # rank-5 approximation to rank-10 truth
   family = binomial("logit"),
   iter = 100,                                   # training epochs
   sampling = 100,                               # MC samples per batch
@@ -472,8 +474,9 @@ par(op)
 
 Read the three panels together. The two heatmaps should show the same block structure, the estimated one noisier and paler. The scatter should show the fitted line clearly **below** the 1:1 dashed line: with these settings the mean within-guild correlation comes back around 0.25 against a truth of 0.6, and the between-guild mean around -0.16 against -0.3. The correlation across all pairs is about 0.72 and the slope about 0.46.
 
-That gap is not a bug, and it is worth understanding because it recurs in every real analysis.
+That gap is expected in this deliberately low-rank teaching fit, and it is worth understanding because several sources of attenuation recur in real analyses.
 
+- The rank-5 fit can represent only five covariance directions from the full-rank truth, so rank misspecification attenuates some associations before sampling and optimisation effects enter.
 - Binary data carry little information per observation. Each 0/1 is a single coin flip, so the latent correlation is only weakly constrained.
 - The rank-$d$ factorisation plus any `lambda` penalty is a shrinkage estimator by construction.
 - Monte Carlo noise in the likelihood adds variance that biases estimated correlations toward zero.
@@ -889,7 +892,7 @@ Run each backend more than once for a serious benchmark and report the distribut
 
 - **`is_torch_available()` is FALSE.** Run `reticulate::py_config()`. Most often `RETICULATE_PYTHON` points nowhere or was set after Python started. Set it before loading sjSDM and restart R.
 - **Mojo backend seems ignored.** Check `file.exists(here::here("work/mojo-backend/mc_grad_server_bin"))`. If missing, redo Step 3. If Python is already active, switch with `set_sjsdm_backend()` or restart R.
-- **Large Mojo fit gives suspect results.** This is v0.2.0-tag behavior, fixed on the current development branch. With the tag, check whether `sampling * step_size * biotic_rank` exceeds 262,144; use PyTorch or set Python's `SJSDM_MOJO_SEED_TRANSPORT=0`.
+- **Large or shape-changing Mojo fit gives suspect results.** This is v0.2.0-tag behavior, fixed on the current development branch. For the seed-generation defect, keep `sampling * step_size * biotic_rank <= 262144` or set Python's `SJSDM_MOJO_SEED_TRANSPORT=0`. Neither measure prevents the separate mixed-shape buffer collision: use PyTorch, or restart the tagged worker/R session before any request whose shape differs from the preceding request.
 - **`dtype = "float64"` fails in auto mode.** This is v0.2.0-tag behavior, fixed on the current development branch. With the tag, use `dtype = "float32"` with Mojo or force PyTorch.
 - **Fit diverges to a constant loss.** Unstandardized predictors. Use `scale(env)`. Affects both backends equally.
 - **`torch.randn` dimension errors.** Fixed in this repository; make sure workers load the patched code (`options(sjSDM.dev = ...)` in parallel CV).
