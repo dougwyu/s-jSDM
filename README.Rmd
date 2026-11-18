@@ -4,15 +4,31 @@ output: github_document
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
-[![Project Status: Active – The project has reached a stable, usable
-state and is being actively
-developed.](http://www.repostatus.org/badges/latest/active.svg)](http://www.repostatus.org/#active)
+[![Project Status: Unsupported](http://www.repostatus.org/badges/latest/unsupported.svg)](http://www.repostatus.org/#unsupported)
 [![License: GPL
 v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 # s-jSDM (Mojo fork) - Joint Species Distribution Modeling accelerated on Apple Silicon CPUs
 
-## What this repository is
+## This fork is archived (November 2026)
+
+**Use the upstream package, [TheoreticalEcology/s-jSDM](https://github.com/TheoreticalEcology/s-jSDM), version 1.1.0 or later.** Until 1.1.0 reaches CRAN, install it from GitHub:
+
+```r
+remotes::install_github("TheoreticalEcology/s-jSDM", subdir = "sjSDM")
+sjSDM::install_sjSDM()
+```
+
+sjSDM 1.1.0 replaced the Python/PyTorch backend with the R torch package, which removes both reasons this fork existed:
+
+- **Apple Silicon support is now built in.** There is no Python, conda or reticulate to set up, and `device = "mps"` runs fits on the Apple GPU. The compatibility fixes in this fork's v0.1.0 were all to the Python backend, which upstream has removed.
+- **The Mojo kernel has nothing to attach to.** It replaced the Monte Carlo likelihood inside the Python backend through a Python bridge. Carrying it forward would mean rewriting it against R torch, and its 1.3--3x speed-up was measured against PyTorch on the CPU, not against R torch, so it is not known whether a rewrite would still pay.
+
+**Do not use this fork for new analyses.** Upstream 1.1.0 fixes several defects in `anova()` that change variation partitioning results, and this fork predates those fixes. For example, the fork still fits the association-only sub-model without an intercept and the no-association sub-models with an identity covariance. See `news(package = "sjSDM")` in 1.1.0 for the full list.
+
+The rest of this README describes the fork as it stood at [v0.2.1](https://github.com/dougwyu/s-jSDM/releases/tag/v0.2.1) and is kept as a record.
+
+## What this repository was
 
 This is a fork of [TheoreticalEcology/s-jSDM](https://github.com/TheoreticalEcology/s-jSDM)
 that replaces the inner Monte Carlo likelihood computation of sjSDM with a
@@ -20,36 +36,7 @@ hand-written **Mojo/MAX kernel**, giving roughly **1.3--3x faster model fits
 on Apple Silicon (M-series) CPUs** while producing statistically equivalent
 results.
 
-**This repository is only for users who want the Mojo-accelerated version of
-sjSDM on an Apple Silicon Mac.** It currently requires:
-
-- An Apple Silicon Mac (arm64 macOS)
-- A clone of this repository (the Mojo worker binary is built locally)
-
-If you are not in that audience -- Intel Macs, Windows, or Linux -- please
-use the **original package instead**:
-
-```r
-remotes::install_github("TheoreticalEcology/s-jSDM/sjSDM")
-library(sjSDM)
-install_sjSDM()
-```
-
-**On Apple Silicon but don't want Mojo?** Stay here anyway. Installing
-sjSDM from the upstream repository is currently unreliable on Apple
-Silicon, whereas this fork contains the compatibility fixes (released as
-[v0.1.0](https://github.com/dougwyu/s-jSDM/releases/tag/v0.1.0)). You can
-use plain PyTorch-mode sjSDM from this fork without any of the pixi/Mojo
-setup:
-
-```r
-remotes::install_github("dougwyu/s-jSDM/sjSDM", ref = "v0.1.0")
-library(sjSDM)
-install_sjSDM()
-```
-
-Everything about fitting and interpreting models is identical between all
-of these; only the compute backend differs.
+It required an Apple Silicon Mac (arm64 macOS) and a clone of this repository, because the Mojo worker binary is built locally. Release [v0.1.0](https://github.com/dougwyu/s-jSDM/releases/tag/v0.1.0) carried only the PyTorch compatibility fixes for Apple Silicon, for users who did not want the Mojo setup.
 
 ## Why Mojo? The tradeoff
 
